@@ -487,7 +487,13 @@ class DocxWriter:
         # Determine which nodes are new based on change_map
         new_node_ids: set[str] = set()
         if change_map:
-            new_node_ids = set(change_map.get("new_nodes", []))
+            # new_nodes contains dicts with node_id, extract just the IDs
+            new_nodes = change_map.get("new_nodes", [])
+            for node_info in new_nodes:
+                if isinstance(node_info, dict):
+                    new_node_ids.add(node_info.get("node_id", ""))
+                elif isinstance(node_info, str):
+                    new_node_ids.add(node_info)
 
         for node in ast.nodes:
             _write_node_to_document(doc, node, highlight_new, new_node_ids)
