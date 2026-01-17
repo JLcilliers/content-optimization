@@ -1,0 +1,83 @@
+# SEO + AI Content Optimizer - Default Configuration
+# =================================================
+
+# Diffing Configuration (CRITICAL)
+diffing:
+  # Semantic similarity threshold for considering text "the same"
+  # Higher = more conservative (fewer false positives, more false negatives)
+  # Recommended: 0.85 (research-validated)
+  semantic_similarity_threshold: 0.85
+
+  # Move detection: similarity threshold for considering content "moved" vs "new"
+  move_detection_threshold: 0.95
+
+  # Minimum content length (chars) to apply semantic matching
+  # Shorter content uses character-level diff only
+  min_semantic_length: 50
+
+  # Conservative mode: when true, don't highlight if confidence is low
+  conservative_mode: true
+
+  # Confidence threshold below which changes require review
+  confidence_review_threshold: 0.7
+
+# Highlighting Configuration
+highlighting:
+  # Green color for new content (WD_COLOR_INDEX value)
+  # 4 = BRIGHT_GREEN (cross-platform compatible)
+  color_index: 4
+
+  # Whether to highlight at word boundaries vs character level
+  word_boundaries: true
+
+# Keyword Optimization
+keywords:
+  # Maximum safe keyword density (exact match)
+  max_density_exact: 0.025  # 2.5%
+
+  # Warning threshold
+  warning_density_exact: 0.02  # 2%
+
+  # Minimum spacing between same keyword (words)
+  min_keyword_spacing: 300
+
+# FAQ Generation
+faq:
+  # Maximum number of Q&A pairs to generate
+  max_count: 10
+
+  # Minimum confidence for including a Q&A
+  min_confidence: 0.7
+
+  # Whether to require source grounding
+  require_grounding: true
+
+  # Maximum answer length (words)
+  max_answer_words: 150
+
+# Business Context
+context:
+  # Confidence threshold for using inferred context
+  inference_confidence_threshold: 0.6
+
+  # Whether to allow content generation without context
+  allow_no_context: true
+
+# Guardrails
+guardrails:
+  # Over-optimization detection
+  density_reject_threshold: 0.04  # 4% = automatic rejection
+
+  # Factual grounding minimum similarity
+  grounding_min_similarity: 0.7
+
+  # Enable human review triggers
+  enable_review_triggers: true
+
+# Performance
+performance:
+  # Maximum document size (bytes) before chunking
+  max_doc_size: 5242880  # 5MB
+
+  # Batch size for embedding calculations
+  embedding_batch_size: 32
