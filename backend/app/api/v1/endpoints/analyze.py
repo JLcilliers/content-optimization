@@ -176,34 +176,51 @@ async def analyze_text(request: TextAnalysisRequest):
 
 def _format_analysis_response(doc_id: str, result: "AnalysisResult") -> AnalysisResponse:
     """Format analysis result for API response."""
-    return AnalysisResponse(
-        doc_id=doc_id,
-        word_count=result.word_count,
-        sentence_count=result.sentence_count,
-        paragraph_count=result.paragraph_count,
-        heading_count=result.heading_count,
-        geo_score=result.geo_score,
-        seo_score=result.seo_score,
-        semantic_score=result.semantic_score,
-        ai_readiness_score=result.ai_readiness_score,
-        readability_score=result.readability_score,
-        keyword_density=result.keyword_density,
-        issues=[
-            {
-                "type": issue.issue_type.value,
-                "severity": issue.severity.value,
-                "message": issue.message,
-                "location": issue.location,
-            }
-            for issue in result.issues
-        ],
-        recommendations=[
-            {
-                "category": rec.category,
-                "priority": rec.priority,
+    # Access nested attributes from AnalysisResult structure
+    stats = result.document_stats
+    geo = result.geo_score
+
+    # Build issues list from all_issues in geo_score
+    issues_list = []
+    for issue in geo.all_issues:
+        issues_list.append({
+            "type": issue.category.value if hasattr(issue, 'category') else "unknown",
+            "severity": issue.severity.value if hasattr(issue, 'severity') else "info",
+            "message": issue.message if hasattr(issue, 'message') else str(issue),
+            "location": getattr(issue, 'location', None),
+        })
+
+    # Build recommendations list (currently stored as strings)
+    recs_list = []
+    for rec in result.recommendations:
+        if isinstance(rec, str):
+            recs_list.append({
+                "category": "general",
+                "priority": "medium",
+                "description": rec,
+                "impact": "Improves content quality",
+            })
+        else:
+            # Handle Recommendation objects if present
+            recs_list.append({
+                "category": rec.category.value if hasattr(rec.category, 'value') else str(rec.category),
+                "priority": rec.priority.value if hasattr(rec.priority, 'value') else str(rec.priority),
                 "description": rec.description,
                 "impact": rec.impact,
-            }
-            for rec in result.recommendations
-        ],
+            })
+
+    return AnalysisResponse(
+        doc_id=doc_id,
+        word_count=stats.word_count,
+        sentence_count=stats.sentence_count,
+        paragraph_count=stats.paragraph_count,
+        heading_count=stats.heading_count,
+        geo_score=geo.total,
+        seo_score=geo.seo_score.total,
+        semantic_score=geo.semantic_score.total,
+        ai_readiness_score=geo.ai_score.total,
+        readability_score=geo.readability_score.total,
+        keyword_density=geo.seo_score.keyword_density if hasattr(geo.seo_score, 'keyword_density') else None,
+        issues=issues_list,
+        recommendations=recs_list,
     )
