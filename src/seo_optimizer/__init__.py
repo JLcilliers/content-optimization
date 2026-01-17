@@ -18,9 +18,12 @@ Example:
     >>> result.save("output.docx")
 """
 
-from importlib.metadata import version
-
-__version__ = version("seo-optimizer")
+try:
+    from importlib.metadata import version
+    __version__ = version("seo-optimizer")
+except Exception:
+    # Package not installed (e.g., in Docker container with PYTHONPATH)
+    __version__ = "1.0.0"
 
 # Core exports will be added as modules are implemented
 __all__: list[str] = [
