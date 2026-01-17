@@ -69,6 +69,7 @@ async def analyze_document(
         # Lazy imports to allow app startup even if modules have issues
         from seo_optimizer.ingestion.docx_parser import DocxParser
         from seo_optimizer.analysis.analyzer import ContentAnalyzer
+        from seo_optimizer.analysis.models import KeywordConfig
 
         # Read file content
         content = await file.read()
@@ -83,12 +84,15 @@ async def analyze_document(
         if secondary_keywords:
             sec_keywords = [k.strip() for k in secondary_keywords.split(",")]
 
-        # Analyze content
-        analyzer = ContentAnalyzer(
-            primary_keyword=primary_keyword,
+        # Create keyword config (use default if no primary keyword provided)
+        keyword_config = KeywordConfig(
+            primary_keyword=primary_keyword or "content",
             secondary_keywords=sec_keywords,
         )
-        result = analyzer.analyze(ast)
+
+        # Analyze content
+        analyzer = ContentAnalyzer()
+        result = analyzer.analyze(ast, keywords=keyword_config)
 
         return _format_analysis_response(ast.doc_id, result)
 
@@ -114,16 +118,17 @@ async def analyze_text(request: TextAnalysisRequest):
     try:
         # Lazy imports to allow app startup even if modules have issues
         from seo_optimizer.ingestion.models import (
-            DocumentAST, ContentNode, NodeType, DocumentMetadata
+            DocumentAST, ContentNode, NodeType, DocumentMetadata, PositionInfo
         )
         from seo_optimizer.analysis.analyzer import ContentAnalyzer
+        from seo_optimizer.analysis.models import KeywordConfig
 
         nodes = [
             ContentNode(
                 node_id="p1",
                 node_type=NodeType.PARAGRAPH,
                 text_content=request.text,
-                position=0,
+                position=PositionInfo(position_id="p1", start_char=0, end_char=len(request.text)),
             )
         ]
         ast = DocumentAST(
@@ -132,12 +137,15 @@ async def analyze_text(request: TextAnalysisRequest):
             metadata=DocumentMetadata(source_path="text-input"),
         )
 
-        # Analyze
-        analyzer = ContentAnalyzer(
-            primary_keyword=request.primary_keyword,
+        # Create keyword config (use default if no primary keyword provided)
+        keyword_config = KeywordConfig(
+            primary_keyword=request.primary_keyword or "content",
             secondary_keywords=request.secondary_keywords or [],
         )
-        result = analyzer.analyze(ast)
+
+        # Analyze
+        analyzer = ContentAnalyzer()
+        result = analyzer.analyze(ast, keywords=keyword_config)
 
         return _format_analysis_response(ast.doc_id, result)
 
