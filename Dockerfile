@@ -1,8 +1,6 @@
 FROM python:3.11-slim
 
-# Build version: 5.0 - Force full rebuild at 2026-01-18
-ARG BUILD_DATE=2026-01-18
-RUN echo "Build timestamp: ${BUILD_DATE}"
+# Build version: 6.0 - Slim image without heavy NLP deps (Railway 4GB limit)
 WORKDIR /app
 
 # Install system dependencies
@@ -14,8 +12,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Download spacy language model
-RUN python -m spacy download en_core_web_sm
+# NLP model download removed - image exceeded 4GB limit
+# The app works without spacy, just disables semantic/entity analysis
 
 # Copy the source code
 COPY src /app/src

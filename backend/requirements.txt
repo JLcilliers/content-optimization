@@ -1,4 +1,4 @@
-# Core dependencies - v2 with NLP
+# Core dependencies - v3 without heavy NLP (Railway image size limit)
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
@@ -11,9 +11,9 @@ diff-match-patch>=20230430
 python-Levenshtein>=0.25.0
 numpy>=1.26.0
 
-# NLP (required for analysis)
-spacy>=3.7.0
-sentence-transformers>=2.2.0
+# NLP dependencies removed - image size exceeded Railway's 4GB limit
+# spacy>=3.7.0  # ~1.5GB with model
+# sentence-transformers>=2.2.0  # ~2GB with torch
 
 # Testing
 pytest>=7.4.0
