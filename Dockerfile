@@ -1,5 +1,6 @@
 FROM python:3.11-slim
 
+# Cache bust: v3 - force full rebuild with NLP deps
 WORKDIR /app
 
 # Install system dependencies
