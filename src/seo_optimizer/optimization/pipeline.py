@@ -92,16 +92,37 @@ class OptimizationPipeline:
     All new content is tracked for green highlighting.
     """
 
-    def __init__(self, config: PipelineConfig | None = None) -> None:
+    def __init__(self, config: PipelineConfig | OptimizationConfig | None = None) -> None:
         """
         Initialize the pipeline.
 
         Args:
-            config: Pipeline configuration
+            config: Pipeline or Optimization configuration
         """
-        self.config = config or PipelineConfig()
+        # Accept either PipelineConfig or OptimizationConfig for convenience
+        if isinstance(config, OptimizationConfig):
+            self.config = PipelineConfig(optimization_config=config)
+        else:
+            self.config = config or PipelineConfig()
         self.state = PipelineState()
         self.optimizer = ContentOptimizer(self.config.optimization_config)
+
+    def optimize(
+        self,
+        ast: DocumentAST,
+        analysis: ContentAnalysisResult | None = None,
+    ) -> PipelineResult:
+        """
+        Convenience method to optimize an AST directly.
+
+        Args:
+            ast: DocumentAST to optimize
+            analysis: Optional pre-computed analysis
+
+        Returns:
+            PipelineResult with optimization outputs
+        """
+        return self.run(ast=ast, analysis=analysis)
 
     def run(
         self,
