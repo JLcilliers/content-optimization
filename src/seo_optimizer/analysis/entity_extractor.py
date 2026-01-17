@@ -13,25 +13,43 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from spacy.language import Language
+    pass  # Removed spacy import - using Any instead
 
 from .models import EntityMatch
 
 # Lazy loading of spaCy model
-_nlp_model: Language | None = None
+_nlp_model: Any | None = None
+_spacy_available: bool | None = None
 
 
-def _get_nlp(model: str = "en_core_web_sm") -> Language:
+def _is_spacy_available() -> bool:
+    """Check if spacy is available."""
+    global _spacy_available
+    if _spacy_available is None:
+        try:
+            import spacy
+            _spacy_available = True
+        except ImportError:
+            _spacy_available = False
+    return _spacy_available
+
+
+def _get_nlp(model: str = "en_core_web_sm") -> Any:
     """
     Lazy load the spaCy model.
 
     Uses en_core_web_sm by default for faster loading.
     Use en_core_web_lg for better accuracy.
+
+    Returns None if spacy is not available.
     """
     global _nlp_model
+    if not _is_spacy_available():
+        return None
+
     if _nlp_model is None:
         import spacy
 
@@ -41,10 +59,9 @@ def _get_nlp(model: str = "en_core_web_sm") -> Language:
             # Fallback to small model if requested model not available
             try:
                 _nlp_model = spacy.load("en_core_web_sm")
-            except OSError as e:
-                raise RuntimeError(
-                    "No spaCy model found. Install with: python -m spacy download en_core_web_sm"
-                ) from e
+            except OSError:
+                # No model available - return None instead of raising
+                return None
     return _nlp_model
 
 
@@ -113,11 +130,11 @@ class EntityExtractor:
                 - en_core_web_lg (slower, more accurate)
         """
         self._model_name = model
-        self._nlp: Language | None = None
+        self._nlp: Any | None = None
 
     @property
-    def nlp(self) -> Language:
-        """Lazy load the spaCy model."""
+    def nlp(self) -> Any | None:
+        """Lazy load the spaCy model. Returns None if spacy unavailable."""
         if self._nlp is None:
             self._nlp = _get_nlp(self._model_name)
         return self._nlp
@@ -133,6 +150,10 @@ class EntityExtractor:
             List of EntityMatch objects with text, type, positions, confidence
         """
         if not text or not text.strip():
+            return []
+
+        # Return empty if spacy not available
+        if self.nlp is None:
             return []
 
         doc = self.nlp(text)
@@ -175,6 +196,10 @@ class EntityExtractor:
             return entities
 
         if not text or not text.strip():
+            return entities
+
+        # Return without noun chunks if spacy not available
+        if self.nlp is None:
             return entities
 
         doc = self.nlp(text)
