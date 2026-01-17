@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-# Cache bust: v3 - force full rebuild with NLP deps
+# Cache bust: v4 - API response formatting fix
 WORKDIR /app
 
 # Install system dependencies
