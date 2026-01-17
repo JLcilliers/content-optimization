@@ -9,6 +9,7 @@ pydantic-settings>=2.1.0
 python-docx>=1.1.0
 diff-match-patch>=20230430
 python-Levenshtein>=0.25.0
+numpy>=1.26.0
 
 # NLP (optional, for full functionality)
 # spacy>=3.7.0
