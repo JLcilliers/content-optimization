@@ -5,17 +5,18 @@ Content analysis endpoints.
 import io
 import sys
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent.parent / "src"))
+# Add src to path for imports - must happen before any seo_optimizer imports
+_src_path = str(Path(__file__).resolve().parent.parent.parent.parent.parent.parent / "src")
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
 
-from seo_optimizer.ingestion.docx_parser import DocxParser
-from seo_optimizer.analysis.analyzer import ContentAnalyzer
-from seo_optimizer.analysis.models import AnalysisResult
+if TYPE_CHECKING:
+    from seo_optimizer.analysis.models import AnalysisResult
 
 router = APIRouter()
 
@@ -65,6 +66,10 @@ async def analyze_document(
         )
 
     try:
+        # Lazy imports to allow app startup even if modules have issues
+        from seo_optimizer.ingestion.docx_parser import DocxParser
+        from seo_optimizer.analysis.analyzer import ContentAnalyzer
+
         # Read file content
         content = await file.read()
         file_stream = io.BytesIO(content)
@@ -87,6 +92,11 @@ async def analyze_document(
 
         return _format_analysis_response(ast.doc_id, result)
 
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service not fully configured: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -102,10 +112,11 @@ async def analyze_text(request: TextAnalysisRequest):
     Useful for quick analysis without uploading a document.
     """
     try:
-        # Create a simple AST from text
+        # Lazy imports to allow app startup even if modules have issues
         from seo_optimizer.ingestion.models import (
             DocumentAST, ContentNode, NodeType, DocumentMetadata
         )
+        from seo_optimizer.analysis.analyzer import ContentAnalyzer
 
         nodes = [
             ContentNode(
@@ -130,6 +141,11 @@ async def analyze_text(request: TextAnalysisRequest):
 
         return _format_analysis_response(ast.doc_id, result)
 
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service not fully configured: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -137,7 +153,7 @@ async def analyze_text(request: TextAnalysisRequest):
         )
 
 
-def _format_analysis_response(doc_id: str, result: AnalysisResult) -> AnalysisResponse:
+def _format_analysis_response(doc_id: str, result: "AnalysisResult") -> AnalysisResponse:
     """Format analysis result for API response."""
     return AnalysisResponse(
         doc_id=doc_id,

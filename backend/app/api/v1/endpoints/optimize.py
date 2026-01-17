@@ -11,13 +11,10 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent.parent.parent / "src"))
-
-from seo_optimizer.ingestion.docx_parser import DocxParser
-from seo_optimizer.optimization.pipeline import OptimizationPipeline
-from seo_optimizer.optimization.models import OptimizationConfig
-from seo_optimizer.output.docx_writer import DocxWriter
+# Add src to path for imports - must happen before any seo_optimizer imports
+_src_path = str(Path(__file__).resolve().parent.parent.parent.parent.parent.parent / "src")
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
 
 router = APIRouter()
 
@@ -85,6 +82,11 @@ async def optimize_document(
         )
 
     try:
+        # Lazy imports to allow app startup even if modules have issues
+        from seo_optimizer.ingestion.docx_parser import DocxParser
+        from seo_optimizer.optimization.pipeline import OptimizationPipeline
+        from seo_optimizer.optimization.models import OptimizationConfig
+
         # Read file content
         content = await file.read()
         file_stream = io.BytesIO(content)
@@ -136,6 +138,11 @@ async def optimize_document(
             warnings=result.warnings,
         )
 
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service not fully configured: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -169,6 +176,12 @@ async def optimize_and_download(
         )
 
     try:
+        # Lazy imports to allow app startup even if modules have issues
+        from seo_optimizer.ingestion.docx_parser import DocxParser
+        from seo_optimizer.optimization.pipeline import OptimizationPipeline
+        from seo_optimizer.optimization.models import OptimizationConfig
+        from seo_optimizer.output.docx_writer import DocxWriter
+
         # Read file content
         content = await file.read()
         file_stream = io.BytesIO(content)
@@ -231,6 +244,11 @@ async def optimize_and_download(
 
     except HTTPException:
         raise
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service not fully configured: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -260,6 +278,11 @@ async def preview_optimization(
         )
 
     try:
+        # Lazy imports to allow app startup even if modules have issues
+        from seo_optimizer.ingestion.docx_parser import DocxParser
+        from seo_optimizer.optimization.pipeline import OptimizationPipeline
+        from seo_optimizer.optimization.models import OptimizationConfig
+
         # Read file content
         content = await file.read()
         file_stream = io.BytesIO(content)
@@ -314,6 +337,11 @@ async def preview_optimization(
             faq_preview=faq_preview,
         )
 
+    except ImportError as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service not fully configured: {str(e)}"
+        )
     except Exception as e:
         raise HTTPException(
             status_code=500,
