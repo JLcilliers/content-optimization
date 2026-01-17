@@ -15,12 +15,15 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "SEO Content Optimizer"
 
-    # CORS
+    # CORS - explicit origins (wildcards don't work with FastAPI CORS)
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:3001",
-        "https://*.vercel.app",
+        "https://frontend-ke4wjrvr0-johan-cilliers-projects.vercel.app",
     ]
+
+    # Allow all origins (set to True for debugging CORS issues)
+    CORS_ALLOW_ALL: bool = True
 
     # File Upload
     MAX_UPLOAD_SIZE: int = 10 * 1024 * 1024  # 10MB

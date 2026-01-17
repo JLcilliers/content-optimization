@@ -233,8 +233,8 @@ export default function Home() {
                   </label>
                   <input
                     type="text"
-                    value={options.secondaryKeywords?.join(', ')}
-                    onChange={(e) =>
+                    defaultValue=""
+                    onBlur={(e) =>
                       setOptions({
                         ...options,
                         secondaryKeywords: e.target.value
@@ -243,9 +243,10 @@ export default function Home() {
                           .filter(Boolean),
                       })
                     }
-                    placeholder="e.g., SEO, rankings, traffic"
+                    placeholder="e.g., SEO tips, content marketing, PTO Insurance"
                     className="w-full px-4 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
+                  <p className="text-xs text-slate-500 mt-1">Type keywords with spaces, separate with commas</p>
                 </div>
 
                 <button
