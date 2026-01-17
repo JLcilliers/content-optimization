@@ -12,6 +12,7 @@ Reference: docs/research/06-docx-output.md
 from __future__ import annotations
 
 import contextlib
+import io
 import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -447,6 +448,53 @@ def validate_output(
         warnings.append("No highlighted content found (may be intentional)")
 
     return warnings
+
+
+class DocxWriter:
+    """
+    Class-based wrapper for DOCX writing operations.
+
+    Provides a streaming interface for generating optimized documents.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the DocxWriter."""
+        pass
+
+    def write_to_stream(
+        self,
+        ast: DocumentAST,
+        stream: io.BytesIO,
+        change_map: dict | None = None,
+        highlight_new: bool = True,
+    ) -> None:
+        """
+        Write optimized document to a stream.
+
+        Args:
+            ast: Document AST to write
+            stream: BytesIO stream to write to
+            change_map: Optional mapping of changes for highlighting
+            highlight_new: Whether to highlight new content
+        """
+        import io as io_module
+        from docx import Document
+        from docx.enum.text import WD_COLOR_INDEX
+
+        doc = Document()
+        _ensure_heading_styles(doc)
+
+        # Determine which nodes are new based on change_map
+        new_node_ids: set[str] = set()
+        if change_map:
+            new_node_ids = set(change_map.get("new_nodes", []))
+
+        for node in ast.nodes:
+            _write_node_to_document(doc, node, highlight_new, new_node_ids)
+
+        # Save to stream
+        doc.save(stream)
+        stream.seek(0)
 
 
 def merge_documents(
