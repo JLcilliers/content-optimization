@@ -4,7 +4,7 @@ API v1 router.
 
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import analyze, optimize, health
+from backend.app.api.v1.endpoints import analyze, optimize, health
 
 api_router = APIRouter()
 

@@ -17,11 +17,14 @@ COPY src /app/src
 # Copy the backend application
 COPY backend /app/backend
 
-# Set Python path
-ENV PYTHONPATH=/app/src:/app/backend
+# Set Python path - /app so 'backend' and 'src' packages are accessible
+ENV PYTHONPATH=/app:/app/src
+
+# Default port (Railway will override with PORT env var)
+ENV PORT=8000
 
 # Expose port
 EXPOSE 8000
 
-# Run the application
-CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the application - use shell form to expand $PORT
+CMD uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT
