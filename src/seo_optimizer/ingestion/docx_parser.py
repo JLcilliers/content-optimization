@@ -493,3 +493,145 @@ def parse_docx_with_snapshot(file_path: str | Path) -> tuple[DocumentAST, Origin
     ast = parse_docx(file_path)
     snapshot = create_snapshot(ast)
     return ast, snapshot
+
+
+class DocxParser:
+    """
+    DOCX Parser class for parsing DOCX files and streams.
+
+    This class provides an object-oriented interface to the parsing functions,
+    supporting both file paths and BytesIO streams.
+
+    Example:
+        >>> parser = DocxParser()
+        >>> ast = parser.parse("document.docx")
+        >>> # Or with a stream
+        >>> with open("document.docx", "rb") as f:
+        ...     ast = parser.parse_stream(io.BytesIO(f.read()))
+    """
+
+    def parse(self, file_path: str | Path) -> DocumentAST:
+        """
+        Parse a DOCX file from a file path.
+
+        Args:
+            file_path: Path to the DOCX file
+
+        Returns:
+            DocumentAST with full structure and formatting preserved
+        """
+        return parse_docx(file_path)
+
+    def parse_stream(self, stream: Any) -> DocumentAST:
+        """
+        Parse a DOCX file from a BytesIO stream.
+
+        Args:
+            stream: BytesIO stream containing DOCX content
+
+        Returns:
+            DocumentAST with full structure and formatting preserved
+
+        Example:
+            >>> import io
+            >>> parser = DocxParser()
+            >>> with open("doc.docx", "rb") as f:
+            ...     ast = parser.parse_stream(io.BytesIO(f.read()))
+        """
+        # Generate document ID
+        doc_id = f"doc_{uuid4().hex[:8]}"
+
+        try:
+            doc: DocxDocument = Document(stream)
+        except Exception as e:
+            raise ValueError(f"Invalid DOCX stream. Error: {e}") from e
+
+        # Extract document metadata (limited for streams)
+        core_props = doc.core_properties
+        metadata = DocumentMetadata(
+            source_path="<stream>",
+            title=core_props.title,
+            author=core_props.author,
+            created=core_props.created,
+            modified=core_props.modified,
+        )
+
+        # Parse document body
+        nodes: list[ContentNode] = []
+        full_text_parts: list[str] = []
+        char_offset = 0
+        para_index = 0
+        table_index = 0
+
+        # Iterate through document body elements
+        for element in doc.element.body:
+            # Check if it's a paragraph
+            if element.tag.endswith("}p"):
+                # Find the corresponding paragraph object
+                para = None
+                for p in doc.paragraphs:
+                    if p._element is element:
+                        para = p
+                        break
+
+                if para is not None:
+                    node, char_offset = _parse_paragraph(
+                        para, para_index, char_offset, doc_id
+                    )
+                    if node.text_content:  # Skip empty paragraphs
+                        nodes.append(node)
+                        full_text_parts.append(node.text_content)
+                        char_offset += 1  # Add separator
+                    para_index += 1
+
+            # Check if it's a table
+            elif element.tag.endswith("}tbl"):
+                # Find the corresponding table object
+                tbl = None
+                for t in doc.tables:
+                    if t._element is element:
+                        tbl = t
+                        break
+
+                if tbl is not None:
+                    node, char_offset = _parse_table(tbl, table_index, char_offset, doc_id)
+                    nodes.append(node)
+                    full_text_parts.append(node.text_content)
+                    char_offset += 1  # Add separator
+                    table_index += 1
+
+        full_text = "\n".join(full_text_parts)
+
+        return DocumentAST(
+            doc_id=doc_id,
+            nodes=nodes,
+            metadata=metadata,
+            full_text=full_text,
+            char_count=len(full_text),
+        )
+
+    def parse_with_snapshot(self, file_path: str | Path) -> tuple[DocumentAST, OriginalSnapshot]:
+        """
+        Parse a DOCX file and create a snapshot.
+
+        Args:
+            file_path: Path to the DOCX file
+
+        Returns:
+            Tuple of (DocumentAST, OriginalSnapshot)
+        """
+        return parse_docx_with_snapshot(file_path)
+
+    def parse_stream_with_snapshot(self, stream: Any) -> tuple[DocumentAST, OriginalSnapshot]:
+        """
+        Parse a DOCX stream and create a snapshot.
+
+        Args:
+            stream: BytesIO stream containing DOCX content
+
+        Returns:
+            Tuple of (DocumentAST, OriginalSnapshot)
+        """
+        ast = self.parse_stream(stream)
+        snapshot = create_snapshot(ast)
+        return ast, snapshot
