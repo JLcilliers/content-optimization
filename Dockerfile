@@ -1,6 +1,8 @@
 FROM python:3.11-slim
 
-# Cache bust: v4 - API response formatting fix
+# Build version: 5.0 - Force full rebuild at 2026-01-18
+ARG BUILD_DATE=2026-01-18
+RUN echo "Build timestamp: ${BUILD_DATE}"
 WORKDIR /app
 
 # Install system dependencies
