@@ -68,7 +68,7 @@ async def analyze_document(
     try:
         # Lazy imports to allow app startup even if modules have issues
         from seo_optimizer.ingestion.docx_parser import DocxParser
-        from seo_optimizer.analysis.analyzer import ContentAnalyzer
+        from seo_optimizer.analysis.analyzer import ContentAnalyzer, AnalyzerConfig
         from seo_optimizer.analysis.models import KeywordConfig
 
         # Read file content
@@ -90,8 +90,15 @@ async def analyze_document(
             secondary_keywords=sec_keywords,
         )
 
+        # Create analyzer config - disable semantic analysis (requires spacy)
+        # and entity extraction until NLP deps are fully installed
+        analyzer_config = AnalyzerConfig(
+            enable_semantic_analysis=False,
+            enable_entity_extraction=False,
+        )
+
         # Analyze content
-        analyzer = ContentAnalyzer()
+        analyzer = ContentAnalyzer(config=analyzer_config)
         result = analyzer.analyze(ast, keywords=keyword_config)
 
         return _format_analysis_response(ast.doc_id, result)
@@ -120,7 +127,7 @@ async def analyze_text(request: TextAnalysisRequest):
         from seo_optimizer.ingestion.models import (
             DocumentAST, ContentNode, NodeType, DocumentMetadata, PositionInfo
         )
-        from seo_optimizer.analysis.analyzer import ContentAnalyzer
+        from seo_optimizer.analysis.analyzer import ContentAnalyzer, AnalyzerConfig
         from seo_optimizer.analysis.models import KeywordConfig
 
         nodes = [
@@ -143,8 +150,14 @@ async def analyze_text(request: TextAnalysisRequest):
             secondary_keywords=request.secondary_keywords or [],
         )
 
+        # Create analyzer config - disable semantic analysis (requires spacy)
+        analyzer_config = AnalyzerConfig(
+            enable_semantic_analysis=False,
+            enable_entity_extraction=False,
+        )
+
         # Analyze
-        analyzer = ContentAnalyzer()
+        analyzer = ContentAnalyzer(config=analyzer_config)
         result = analyzer.analyze(ast, keywords=keyword_config)
 
         return _format_analysis_response(ast.doc_id, result)
