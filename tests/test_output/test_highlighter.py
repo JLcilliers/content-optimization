@@ -14,12 +14,23 @@ import pytest
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 
-from seo_optimizer.diffing.models import Addition, ChangeSet, HighlightRegion
+from seo_optimizer.diffing.models import (
+    Addition,
+    ChangeSet,
+    ChangeType,
+    HighlightRegion,
+    ParagraphContent,
+    TextSegment,
+)
 from seo_optimizer.output.highlighter import (
     HIGHLIGHT_COLOR_INDEX,
+    HIGHLIGHT_COLORS,
     _apply_highlight_to_run,
     _copy_run_formatting,
     _get_paragraph_text_with_positions,
+    add_paragraph_with_changes,
+    add_text_with_changes,
+    apply_change_formatting,
     apply_highlights,
     create_highlighted_run,
     highlight_new_paragraph,
@@ -96,9 +107,9 @@ def empty_changeset() -> ChangeSet:
 class TestHighlightColor:
     """Tests for highlight color configuration."""
 
-    def test_highlight_color_is_yellow(self) -> None:
-        """Test that default highlight color is yellow."""
-        assert HIGHLIGHT_COLOR_INDEX == WD_COLOR_INDEX.YELLOW
+    def test_highlight_color_is_bright_green(self) -> None:
+        """Test that default highlight color is bright green (for new content)."""
+        assert HIGHLIGHT_COLOR_INDEX == WD_COLOR_INDEX.BRIGHT_GREEN
 
 
 # =============================================================================
@@ -110,13 +121,13 @@ class TestApplyHighlightToRun:
     """Tests for _apply_highlight_to_run function."""
 
     def test_apply_highlight_sets_color(self, temp_doc: Document) -> None:
-        """Test that applying highlight sets the highlight color."""
+        """Test that applying highlight sets the highlight color (BRIGHT_GREEN default)."""
         para = temp_doc.add_paragraph()
         run = para.add_run("Test text")
 
         _apply_highlight_to_run(run)
 
-        assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+        assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
 
     def test_apply_highlight_custom_color(self, temp_doc: Document) -> None:
         """Test applying a custom highlight color."""
@@ -533,3 +544,150 @@ class TestHighlighterIntegration:
         # Get combined text from all runs
         combined_text = "".join(run.text for run in para.runs)
         assert combined_text == original_text
+
+
+# =============================================================================
+# Multi-Color Highlighting Tests
+# =============================================================================
+
+
+class TestHighlightColors:
+    """Tests for multi-color highlight support."""
+
+    def test_highlight_colors_mapping(self) -> None:
+        """Test that highlight colors are correctly mapped."""
+        assert HIGHLIGHT_COLORS[ChangeType.INSERTED] == WD_COLOR_INDEX.BRIGHT_GREEN
+        assert HIGHLIGHT_COLORS[ChangeType.MODIFIED] == WD_COLOR_INDEX.YELLOW
+        assert HIGHLIGHT_COLORS[ChangeType.DELETED] is None
+        assert HIGHLIGHT_COLORS[ChangeType.UNCHANGED] is None
+
+
+class TestApplyChangeFormatting:
+    """Tests for apply_change_formatting function."""
+
+    def test_inserted_gets_green_highlight(self, temp_doc: Document) -> None:
+        """Test that inserted content gets green highlight."""
+        para = temp_doc.add_paragraph()
+        run = para.add_run("New content")
+
+        apply_change_formatting(run, ChangeType.INSERTED)
+
+        assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
+
+    def test_modified_gets_yellow_highlight(self, temp_doc: Document) -> None:
+        """Test that modified content gets yellow highlight."""
+        para = temp_doc.add_paragraph()
+        run = para.add_run("Changed content")
+
+        apply_change_formatting(run, ChangeType.MODIFIED)
+
+        assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+
+    def test_deleted_gets_strikethrough(self, temp_doc: Document) -> None:
+        """Test that deleted content gets strikethrough."""
+        para = temp_doc.add_paragraph()
+        run = para.add_run("Removed content")
+
+        apply_change_formatting(run, ChangeType.DELETED)
+
+        assert run.font.strike is True
+        assert run.font.color.rgb is not None
+
+    def test_unchanged_gets_no_formatting(self, temp_doc: Document) -> None:
+        """Test that unchanged content gets no formatting."""
+        para = temp_doc.add_paragraph()
+        run = para.add_run("Original content")
+
+        apply_change_formatting(run, ChangeType.UNCHANGED)
+
+        assert run.font.highlight_color is None
+        assert run.font.strike is not True
+
+
+class TestAddTextWithChanges:
+    """Tests for add_text_with_changes function."""
+
+    def test_add_single_segment(self, temp_doc: Document) -> None:
+        """Test adding a single text segment."""
+        para = temp_doc.add_paragraph()
+        segments = [TextSegment(text="Hello world", change_type=ChangeType.UNCHANGED)]
+
+        add_text_with_changes(para, segments)
+
+        assert para.text == "Hello world"
+
+    def test_add_multiple_segments(self, temp_doc: Document) -> None:
+        """Test adding multiple segments with different change types."""
+        para = temp_doc.add_paragraph()
+        segments = [
+            TextSegment(text="Original ", change_type=ChangeType.UNCHANGED),
+            TextSegment(text="new content", change_type=ChangeType.INSERTED),
+        ]
+
+        add_text_with_changes(para, segments)
+
+        assert "Original new content" in para.text
+        # Check that runs have correct formatting
+        runs = para.runs
+        assert len(runs) == 2
+        assert runs[1].font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
+
+    def test_add_mixed_changes(self, temp_doc: Document) -> None:
+        """Test adding mixed change types."""
+        para = temp_doc.add_paragraph()
+        segments = [
+            TextSegment(text="Start. ", change_type=ChangeType.UNCHANGED),
+            TextSegment(text="Modified. ", change_type=ChangeType.MODIFIED),
+            TextSegment(text="Added. ", change_type=ChangeType.INSERTED),
+            TextSegment(text="Removed.", change_type=ChangeType.DELETED),
+        ]
+
+        add_text_with_changes(para, segments)
+
+        runs = para.runs
+        assert len(runs) == 4
+        assert runs[0].font.highlight_color is None  # Unchanged
+        assert runs[1].font.highlight_color == WD_COLOR_INDEX.YELLOW  # Modified
+        assert runs[2].font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN  # Inserted
+        assert runs[3].font.strike is True  # Deleted
+
+
+class TestAddParagraphWithChanges:
+    """Tests for add_paragraph_with_changes function."""
+
+    def test_add_basic_paragraph(self, temp_doc: Document) -> None:
+        """Test adding a basic paragraph."""
+        content = ParagraphContent(
+            segments=[TextSegment(text="Test paragraph", change_type=ChangeType.UNCHANGED)]
+        )
+
+        para = add_paragraph_with_changes(temp_doc, content)
+
+        assert para.text == "Test paragraph"
+
+    def test_add_heading_paragraph(self, temp_doc: Document) -> None:
+        """Test adding a heading paragraph."""
+        content = ParagraphContent(
+            segments=[TextSegment(text="Section Title", change_type=ChangeType.UNCHANGED)],
+            heading_level=2,
+        )
+
+        para = add_paragraph_with_changes(temp_doc, content)
+
+        assert para.text == "Section Title"
+        # Style should be applied (may fail if style doesn't exist)
+
+    def test_add_paragraph_with_changes(self, temp_doc: Document) -> None:
+        """Test adding paragraph with tracked changes."""
+        content = ParagraphContent(
+            segments=[
+                TextSegment(text="Existing ", change_type=ChangeType.UNCHANGED),
+                TextSegment(text="new addition", change_type=ChangeType.INSERTED),
+            ]
+        )
+
+        para = add_paragraph_with_changes(temp_doc, content)
+
+        assert "Existing new addition" in para.text
+        runs = para.runs
+        assert runs[1].font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN

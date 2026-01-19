@@ -14,11 +14,19 @@ Reference: docs/research/06-docx-output.md
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 from docx.enum.text import WD_COLOR_INDEX
+from docx.shared import RGBColor
 
-from seo_optimizer.diffing.models import ChangeSet, HighlightRegion
+from seo_optimizer.diffing.models import (
+    ChangeSet,
+    ChangeType,
+    HighlightRegion,
+    ParagraphContent,
+    TextSegment,
+)
 
 if TYPE_CHECKING:
     from docx.text.paragraph import Paragraph
@@ -28,9 +36,19 @@ if TYPE_CHECKING:
 # Using Any because docx.Document is a function, not a class type
 DocxDocument = Any
 
-# Highlight color index - YELLOW is more visible than bright green
-# BRIGHT_GREEN = 4, YELLOW = 7
-HIGHLIGHT_COLOR_INDEX = WD_COLOR_INDEX.YELLOW
+# Highlight color mapping by change type
+HIGHLIGHT_COLORS = {
+    ChangeType.INSERTED: WD_COLOR_INDEX.BRIGHT_GREEN,  # Green for new content
+    ChangeType.MODIFIED: WD_COLOR_INDEX.YELLOW,  # Yellow for modifications
+    ChangeType.DELETED: None,  # Strikethrough, no highlight
+    ChangeType.UNCHANGED: None,  # No formatting
+}
+
+# Default highlight color for new content (BRIGHT_GREEN)
+HIGHLIGHT_COLOR_INDEX = WD_COLOR_INDEX.BRIGHT_GREEN
+
+# Color for deleted text (gray)
+DELETED_TEXT_COLOR = RGBColor(0x99, 0x99, 0x99)
 
 
 def _copy_run_formatting(source_run: Run, target_run: Run) -> None:
@@ -74,6 +92,89 @@ def _apply_highlight_to_run(
         color: WD_COLOR_INDEX value (default: YELLOW)
     """
     run.font.highlight_color = color
+
+
+def apply_change_formatting(run: Run, change_type: ChangeType) -> None:
+    """
+    Apply formatting to a run based on change type.
+
+    - INSERTED: Green highlight
+    - MODIFIED: Yellow highlight
+    - DELETED: Strikethrough + gray text
+    - UNCHANGED: No formatting
+
+    Args:
+        run: Run to format
+        change_type: Type of change
+    """
+    if change_type == ChangeType.INSERTED:
+        run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+    elif change_type == ChangeType.MODIFIED:
+        run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+    elif change_type == ChangeType.DELETED:
+        run.font.strike = True
+        run.font.color.rgb = DELETED_TEXT_COLOR
+
+    # UNCHANGED: No formatting applied
+
+
+def add_text_with_changes(
+    paragraph: Paragraph,
+    segments: list[TextSegment],
+) -> None:
+    """
+    Add text segments to a paragraph with appropriate formatting.
+
+    Each segment is formatted based on its change type:
+    - INSERTED: Green highlight
+    - MODIFIED: Yellow highlight
+    - DELETED: Strikethrough + gray text
+    - UNCHANGED: No formatting
+
+    Args:
+        paragraph: Paragraph to add text to
+        segments: List of TextSegment objects with change tracking
+    """
+    for segment in segments:
+        run = paragraph.add_run(segment.text)
+        apply_change_formatting(run, segment.change_type)
+
+
+def add_paragraph_with_changes(
+    doc: DocxDocument,
+    content: ParagraphContent,
+    heading_style_map: dict[int, str] | None = None,
+) -> Paragraph:
+    """
+    Add a complete paragraph with change tracking.
+
+    Handles heading styles and text segments with change formatting.
+
+    Args:
+        doc: Document to add paragraph to
+        content: ParagraphContent with segments and optional heading level
+        heading_style_map: Optional mapping of heading levels to style names
+
+    Returns:
+        The created paragraph
+    """
+    if heading_style_map is None:
+        heading_style_map = {1: "Heading 1", 2: "Heading 2", 3: "Heading 3"}
+
+    para = doc.add_paragraph()
+
+    # Apply heading style if applicable
+    if content.heading_level:
+        style_name = heading_style_map.get(content.heading_level, "Normal")
+        with contextlib.suppress(KeyError):
+            para.style = style_name
+
+    # Add all text segments with their formatting
+    add_text_with_changes(para, content.segments)
+
+    return para
 
 
 def _get_paragraph_text_with_positions(

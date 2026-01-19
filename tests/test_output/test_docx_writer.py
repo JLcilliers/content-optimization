@@ -16,7 +16,15 @@ import pytest
 from docx import Document
 from docx.enum.text import WD_COLOR_INDEX
 
-from seo_optimizer.diffing.models import Addition, ChangeSet, HighlightRegion
+from seo_optimizer.diffing.models import (
+    Addition,
+    ChangeSet,
+    ChangeType,
+    HighlightRegion,
+    OptimizedContent,
+    ParagraphContent,
+    TextSegment,
+)
 from seo_optimizer.ingestion.models import (
     ContentNode,
     DocumentAST,
@@ -25,10 +33,16 @@ from seo_optimizer.ingestion.models import (
     PositionInfo,
 )
 from seo_optimizer.output.docx_writer import (
+    OptimizedDocumentWriter,
     _add_paragraph_with_highlighting,
+    add_color_legend,
+    add_faq_section_enhanced,
+    add_optimization_header,
+    apply_heading_style,
     insert_content_at_position,
     insert_faq_section,
     merge_documents,
+    setup_document_styles,
     validate_output,
     write_document_from_ast,
     write_optimized_docx,
@@ -171,9 +185,9 @@ class TestAddParagraphWithHighlighting:
         para = _add_paragraph_with_highlighting(doc, "New text", highlight=True)
 
         assert para is not None
-        # Check that highlight is applied
+        # Check that highlight is applied (BRIGHT_GREEN for new content)
         for run in para.runs:
-            assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+            assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
 
     def test_add_paragraph_invalid_style_handled(self) -> None:
         """Test that invalid style is handled gracefully."""
@@ -300,11 +314,11 @@ class TestWriteDocumentFromAst:
         )
 
         doc = Document(str(output_path))
-        # Check that content is highlighted
+        # Check that content is highlighted (BRIGHT_GREEN for new content)
         for para in doc.paragraphs:
             if "Hello world" in para.text:
                 for run in para.runs:
-                    assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+                    assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
 
 
 # =============================================================================
@@ -340,11 +354,11 @@ class TestInsertFaqSection:
         faq_content = [("Question?", "Answer.")]
         insert_faq_section(doc, faq_content, highlight=True)
 
-        # Check for highlighted content
+        # Check for highlighted content (green for new content)
         highlighted = False
         for para in doc.paragraphs:
             for run in para.runs:
-                if run.font.highlight_color == WD_COLOR_INDEX.YELLOW:
+                if run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN:
                     highlighted = True
                     break
         assert highlighted
@@ -403,7 +417,7 @@ class TestInsertContentAtPosition:
         para = insert_content_at_position(doc, "New content", position=0, highlight=True)
 
         for run in para.runs:
-            assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+            assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
 
     def test_insert_without_highlight(self, temp_source_docx: Path) -> None:
         """Test that content is not highlighted when not requested."""
@@ -521,11 +535,11 @@ class TestMergeDocuments:
         )
 
         doc = Document(str(output_path))
-        # Find the paragraph with the addition
+        # Find the paragraph with the addition (BRIGHT_GREEN for new content)
         for para in doc.paragraphs:
             if "Highlighted addition" in para.text:
                 for run in para.runs:
-                    assert run.font.highlight_color == WD_COLOR_INDEX.YELLOW
+                    assert run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN
 
     def test_merge_without_highlight(
         self, tmp_path: Path, temp_source_docx: Path
@@ -604,3 +618,364 @@ class TestDocxWriterIntegration:
         # Should be valid
         assert "Invalid" not in str(warnings)
         assert "does not exist" not in str(warnings)
+
+
+# =============================================================================
+# Heading Style Tests
+# =============================================================================
+
+
+class TestApplyHeadingStyle:
+    """Tests for apply_heading_style function."""
+
+    def test_parses_h1_marker(self) -> None:
+        """Test parsing [H1] marker."""
+        doc = Document()
+        para = doc.add_paragraph()
+
+        result = apply_heading_style(para, "[H1] Main Title")
+
+        assert result == "Main Title"
+
+    def test_parses_h2_marker(self) -> None:
+        """Test parsing [H2] marker."""
+        doc = Document()
+        para = doc.add_paragraph()
+
+        result = apply_heading_style(para, "[H2] Section Header")
+
+        assert result == "Section Header"
+
+    def test_parses_h3_marker(self) -> None:
+        """Test parsing [H3] marker."""
+        doc = Document()
+        para = doc.add_paragraph()
+
+        result = apply_heading_style(para, "[H3] Subsection")
+
+        assert result == "Subsection"
+
+    def test_no_marker_returns_original(self) -> None:
+        """Test that text without marker is returned unchanged."""
+        doc = Document()
+        para = doc.add_paragraph()
+
+        result = apply_heading_style(para, "Regular paragraph text")
+
+        assert result == "Regular paragraph text"
+
+    def test_invalid_marker_not_parsed(self) -> None:
+        """Test that invalid markers are not parsed."""
+        doc = Document()
+        para = doc.add_paragraph()
+
+        result = apply_heading_style(para, "[H4] Level 4 heading")
+
+        assert result == "[H4] Level 4 heading"
+
+
+class TestSetupDocumentStyles:
+    """Tests for setup_document_styles function."""
+
+    def test_styles_are_configured(self) -> None:
+        """Test that document styles are configured."""
+        doc = Document()
+
+        setup_document_styles(doc)
+
+        # Should not raise and styles should exist
+        assert "Heading 1" in [s.name for s in doc.styles]
+        assert "Heading 2" in [s.name for s in doc.styles]
+        assert "Normal" in [s.name for s in doc.styles]
+
+
+# =============================================================================
+# Document Header Tests
+# =============================================================================
+
+
+class TestAddOptimizationHeader:
+    """Tests for add_optimization_header function."""
+
+    def test_adds_title(self) -> None:
+        """Test that header adds title."""
+        doc = Document()
+
+        add_optimization_header(doc, url="https://example.com", keyword="test")
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "SEO OPTIMIZATION REPORT" in full_text
+
+    def test_adds_metadata_table(self) -> None:
+        """Test that header adds metadata table."""
+        doc = Document()
+
+        add_optimization_header(doc, url="https://example.com", keyword="test keyword")
+
+        # Should have a table
+        assert len(doc.tables) > 0
+        table = doc.tables[0]
+        table_text = " ".join(cell.text for row in table.rows for cell in row.cells)
+        assert "URL:" in table_text
+        assert "Target Keyword:" in table_text
+
+    def test_uses_content_object(self) -> None:
+        """Test header with OptimizedContent object."""
+        doc = Document()
+        content = OptimizedContent(
+            url="https://test.com",
+            target_keyword="SEO",
+            optimization_date="2024-01-15",
+            change_summary={"total": 10},
+        )
+
+        add_optimization_header(doc, content=content)
+
+        # Should use values from content
+        table = doc.tables[0]
+        table_text = " ".join(cell.text for row in table.rows for cell in row.cells)
+        assert "https://test.com" in table_text
+        assert "SEO" in table_text
+
+
+class TestAddColorLegend:
+    """Tests for add_color_legend function."""
+
+    def test_adds_legend(self) -> None:
+        """Test that color legend is added."""
+        doc = Document()
+
+        para = add_color_legend(doc)
+
+        assert "CHANGE LEGEND" in para.text
+        assert "New Content" in para.text
+        assert "Modified" in para.text
+        assert "Removed" in para.text
+
+    def test_legend_has_highlighted_samples(self) -> None:
+        """Test that legend contains highlighted samples."""
+        doc = Document()
+
+        para = add_color_legend(doc)
+
+        # Check for runs with highlight colors
+        has_green = False
+        has_yellow = False
+        has_strike = False
+        for run in para.runs:
+            if run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN:
+                has_green = True
+            if run.font.highlight_color == WD_COLOR_INDEX.YELLOW:
+                has_yellow = True
+            if run.font.strike:
+                has_strike = True
+
+        assert has_green, "Legend should have green highlighted sample"
+        assert has_yellow, "Legend should have yellow highlighted sample"
+        assert has_strike, "Legend should have strikethrough sample"
+
+
+# =============================================================================
+# Enhanced FAQ Section Tests
+# =============================================================================
+
+
+class TestAddFaqSectionEnhanced:
+    """Tests for add_faq_section_enhanced function."""
+
+    def test_adds_section_header(self) -> None:
+        """Test that FAQ section header is added."""
+        doc = Document()
+        faqs = [{"question": "What is this?", "answer": "This is a test."}]
+
+        add_faq_section_enhanced(doc, faqs)
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Frequently Asked Questions" in full_text
+
+    def test_adds_questions_and_answers(self) -> None:
+        """Test that questions and answers are added."""
+        doc = Document()
+        faqs = [
+            {"question": "Q1?", "answer": "A1"},
+            {"question": "Q2?", "answer": "A2"},
+        ]
+
+        add_faq_section_enhanced(doc, faqs)
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Q1?" in full_text
+        assert "A1" in full_text
+        assert "Q2?" in full_text
+        assert "A2" in full_text
+
+    def test_highlights_faq_content(self) -> None:
+        """Test that FAQ content is highlighted green."""
+        doc = Document()
+        faqs = [{"question": "Test?", "answer": "Answer"}]
+
+        add_faq_section_enhanced(doc, faqs, highlight=True)
+
+        # Find highlighted content
+        has_highlight = False
+        for para in doc.paragraphs:
+            for run in para.runs:
+                if run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN:
+                    has_highlight = True
+                    break
+
+        assert has_highlight
+
+    def test_no_highlight_when_disabled(self) -> None:
+        """Test that FAQ content is not highlighted when disabled."""
+        doc = Document()
+        faqs = [{"question": "Test?", "answer": "Answer"}]
+
+        add_faq_section_enhanced(doc, faqs, highlight=False)
+
+        # Check no highlighting
+        for para in doc.paragraphs:
+            for run in para.runs:
+                assert run.font.highlight_color is None
+
+    def test_empty_faqs_does_nothing(self) -> None:
+        """Test that empty FAQ list does nothing."""
+        doc = Document()
+        initial_count = len(doc.paragraphs)
+
+        add_faq_section_enhanced(doc, [])
+
+        assert len(doc.paragraphs) == initial_count
+
+
+# =============================================================================
+# Optimized Document Writer Tests
+# =============================================================================
+
+
+class TestOptimizedDocumentWriter:
+    """Tests for OptimizedDocumentWriter class."""
+
+    def test_create_document_basic(self) -> None:
+        """Test creating a basic document."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+        )
+
+        doc = writer.create_document(content)
+
+        assert doc is not None
+        assert len(doc.paragraphs) > 0
+
+    def test_create_document_with_meta(self) -> None:
+        """Test creating document with meta information."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+            meta_title=ParagraphContent(
+                segments=[TextSegment(text="Page Title", change_type=ChangeType.UNCHANGED)]
+            ),
+            meta_description=ParagraphContent(
+                segments=[TextSegment(text="Description", change_type=ChangeType.UNCHANGED)]
+            ),
+        )
+
+        doc = writer.create_document(content)
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Meta Information" in full_text
+        assert "Page Title" in full_text
+
+    def test_create_document_with_body(self) -> None:
+        """Test creating document with body content."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+            body_paragraphs=[
+                ParagraphContent(
+                    segments=[TextSegment(text="Body content", change_type=ChangeType.UNCHANGED)]
+                )
+            ],
+        )
+
+        doc = writer.create_document(content)
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Body content" in full_text
+
+    def test_create_document_with_faq(self) -> None:
+        """Test creating document with FAQ section."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+            faq_items=[{"question": "Q?", "answer": "A."}],
+        )
+
+        doc = writer.create_document(content)
+
+        full_text = "\n".join(p.text for p in doc.paragraphs)
+        assert "Frequently Asked Questions" in full_text
+        assert "Q?" in full_text
+
+    def test_write_to_file(self, tmp_path: Path) -> None:
+        """Test writing document to file."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+        )
+        output_path = tmp_path / "output.docx"
+
+        result = writer.write_to_file(content, output_path)
+
+        assert result == output_path
+        assert output_path.exists()
+
+    def test_write_to_stream(self) -> None:
+        """Test writing document to stream."""
+        import io
+
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+        )
+        stream = io.BytesIO()
+
+        writer.write_to_stream(content, stream)
+
+        assert stream.tell() == 0  # Should be seeked back to start
+        assert len(stream.getvalue()) > 0  # Should have content
+
+    def test_change_highlighting_applied(self) -> None:
+        """Test that change highlighting is applied."""
+        writer = OptimizedDocumentWriter()
+        content = OptimizedContent(
+            url="https://example.com",
+            target_keyword="test",
+            body_paragraphs=[
+                ParagraphContent(
+                    segments=[
+                        TextSegment(text="Original ", change_type=ChangeType.UNCHANGED),
+                        TextSegment(text="new content", change_type=ChangeType.INSERTED),
+                    ]
+                )
+            ],
+        )
+
+        doc = writer.create_document(content)
+
+        # Find the highlighted content
+        has_green = False
+        for para in doc.paragraphs:
+            for run in para.runs:
+                if run.font.highlight_color == WD_COLOR_INDEX.BRIGHT_GREEN:
+                    has_green = True
+                    break
+
+        assert has_green

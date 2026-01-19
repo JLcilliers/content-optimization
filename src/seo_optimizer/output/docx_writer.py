@@ -5,6 +5,9 @@ Reconstructs the DOCX file with:
 - Original content preserved exactly
 - New content inserted at appropriate positions
 - Highlighting applied via highlighter module
+- Proper heading styles (no [H1], [H2], [H3] markers)
+- Document header with optimization summary
+- Color legend for change tracking
 
 Reference: docs/research/06-docx-output.md
 """
@@ -13,19 +16,43 @@ from __future__ import annotations
 
 import contextlib
 import io
+import re
 import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from docx import Document
+from docx.enum.text import WD_COLOR_INDEX
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Pt, RGBColor
 
-from seo_optimizer.diffing.models import ChangeSet
+from seo_optimizer.diffing.models import (
+    ChangeSet,
+    OptimizedContent,
+)
 from seo_optimizer.ingestion.models import ContentNode, DocumentAST, NodeType
-from seo_optimizer.output.highlighter import apply_highlights
+from seo_optimizer.output.highlighter import (
+    add_paragraph_with_changes,
+    add_text_with_changes,
+    apply_highlights,
+)
 
 if TYPE_CHECKING:
     from docx.document import Document as DocxDocument
+    from docx.table import _Cell
     from docx.text.paragraph import Paragraph
+
+# Regex pattern to detect heading markers
+HEADING_PATTERN = re.compile(r"^\[H([123])\]\s*(.*)", re.DOTALL)
+
+# Heading style mapping
+HEADING_STYLE_MAP = {
+    1: "Heading 1",
+    2: "Heading 2",
+    3: "Heading 3",
+}
 
 
 def _ensure_heading_styles(doc: DocxDocument) -> None:
@@ -41,6 +68,217 @@ def _ensure_heading_styles(doc: DocxDocument) -> None:
         style_name = f"Heading {level}"
         with contextlib.suppress(KeyError):
             _ = doc.styles[style_name]
+
+
+def apply_heading_style(paragraph: Paragraph, text: str) -> str:
+    """
+    Check if text starts with [H1], [H2], or [H3] marker.
+    If so, apply the corresponding heading style and return cleaned text.
+
+    Args:
+        paragraph: The python-docx Paragraph object
+        text: The paragraph text content
+
+    Returns:
+        Cleaned text with marker removed
+    """
+    match = HEADING_PATTERN.match(text)
+    if match:
+        level = int(match.group(1))
+        clean_text = match.group(2)
+        style_name = HEADING_STYLE_MAP.get(level, "Normal")
+        with contextlib.suppress(KeyError):
+            paragraph.style = style_name
+        return clean_text
+    return text
+
+
+def setup_document_styles(doc: DocxDocument) -> None:
+    """
+    Configure document styles for professional output.
+
+    Sets up heading styles with visual hierarchy:
+    - H1: Large, navy blue, bold
+    - H2: Medium, blue, bold
+    - H3: Small, dark gray, bold
+
+    Args:
+        doc: Document to configure
+    """
+    styles = doc.styles
+
+    # Configure Heading 1
+    with contextlib.suppress(KeyError):
+        h1_style = styles["Heading 1"]
+        h1_font = h1_style.font
+        h1_font.name = "Poppins"
+        h1_font.size = Pt(24)
+        h1_font.bold = True
+        h1_font.color.rgb = RGBColor(0x1B, 0x4F, 0x72)  # Navy blue
+
+    # Configure Heading 2
+    with contextlib.suppress(KeyError):
+        h2_style = styles["Heading 2"]
+        h2_font = h2_style.font
+        h2_font.name = "Poppins"
+        h2_font.size = Pt(18)
+        h2_font.bold = True
+        h2_font.color.rgb = RGBColor(0x28, 0x74, 0xA6)  # Medium blue
+
+    # Configure Heading 3
+    with contextlib.suppress(KeyError):
+        h3_style = styles["Heading 3"]
+        h3_font = h3_style.font
+        h3_font.name = "Poppins"
+        h3_font.size = Pt(14)
+        h3_font.bold = True
+        h3_font.color.rgb = RGBColor(0x33, 0x33, 0x33)  # Dark gray
+
+    # Configure Normal
+    with contextlib.suppress(KeyError):
+        normal_style = styles["Normal"]
+        normal_font = normal_style.font
+        normal_font.name = "Poppins"
+        normal_font.size = Pt(12)
+
+
+def _set_cell_shading(cell: _Cell, color_hex: str) -> None:
+    """
+    Apply background shading to a table cell.
+
+    Args:
+        cell: Table cell to shade
+        color_hex: Hex color code (without #)
+    """
+    shading = OxmlElement("w:shd")
+    shading.set(qn("w:fill"), color_hex)
+    cell._tc.get_or_add_tcPr().append(shading)
+
+
+def _add_paragraph_border(paragraph: Paragraph) -> None:
+    """
+    Add a border around a paragraph.
+
+    Args:
+        paragraph: Paragraph to add border to
+    """
+    pPr = paragraph._p.get_or_add_pPr()
+    pBdr = OxmlElement("w:pBdr")
+    for border_name in ["top", "left", "bottom", "right"]:
+        border = OxmlElement(f"w:{border_name}")
+        border.set(qn("w:val"), "single")
+        border.set(qn("w:sz"), "4")
+        border.set(qn("w:space"), "1")
+        border.set(qn("w:color"), "CCCCCC")
+        pBdr.append(border)
+    pPr.append(pBdr)
+
+
+def add_color_legend(doc: DocxDocument) -> Paragraph:
+    """
+    Add a legend explaining the color coding.
+
+    Args:
+        doc: Document to add legend to
+
+    Returns:
+        The legend paragraph
+    """
+    legend_para = doc.add_paragraph()
+
+    # Title
+    title_run = legend_para.add_run("CHANGE LEGEND: ")
+    title_run.bold = True
+
+    # Green sample
+    green_run = legend_para.add_run(" New Content ")
+    green_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+    legend_para.add_run("  |  ")
+
+    # Yellow sample
+    yellow_run = legend_para.add_run(" Modified ")
+    yellow_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+    legend_para.add_run("  |  ")
+
+    # Strikethrough sample
+    strike_run = legend_para.add_run(" Removed ")
+    strike_run.font.strike = True
+    strike_run.font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+
+    # Add border to legend paragraph
+    _add_paragraph_border(legend_para)
+
+    return legend_para
+
+
+def add_optimization_header(
+    doc: DocxDocument,
+    content: OptimizedContent | None = None,
+    url: str = "",
+    keyword: str = "",
+    total_changes: int = 0,
+) -> None:
+    """
+    Add a professional header section with optimization metadata.
+
+    Args:
+        doc: Document to add header to
+        content: OptimizedContent object (if available)
+        url: URL analyzed (fallback if content not provided)
+        keyword: Target keyword (fallback if content not provided)
+        total_changes: Total number of changes (fallback if content not provided)
+    """
+    # Extract from content if available
+    if content:
+        url = content.url or url
+        keyword = content.target_keyword or keyword
+        date = content.optimization_date or datetime.now().strftime("%Y-%m-%d")
+        total_changes = content.change_summary.get("total", total_changes)
+    else:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    # Title
+    title_para = doc.add_paragraph()
+    title_run = title_para.add_run("SEO OPTIMIZATION REPORT")
+    title_run.bold = True
+    title_run.font.size = Pt(18)
+    title_run.font.color.rgb = RGBColor(0x1B, 0x4F, 0x72)
+
+    # Metadata table
+    table = doc.add_table(rows=4, cols=2)
+    table.style = "Table Grid"
+
+    metadata = [
+        ("URL:", url or "(not specified)"),
+        ("Target Keyword:", keyword or "(not specified)"),
+        ("Optimized:", date),
+        ("Total Changes:", f"{total_changes} modifications"),
+    ]
+
+    for i, (label, value) in enumerate(metadata):
+        row = table.rows[i]
+        # Label cell (shaded)
+        label_cell = row.cells[0]
+        label_cell.text = label
+        if label_cell.paragraphs:
+            for run in label_cell.paragraphs[0].runs:
+                run.bold = True
+        _set_cell_shading(label_cell, "E8F4FD")
+
+        # Value cell
+        value_cell = row.cells[1]
+        value_cell.text = value
+
+    # Spacer
+    doc.add_paragraph()
+
+    # Legend
+    add_color_legend(doc)
+
+    # Spacer
+    doc.add_paragraph()
 
 
 def _add_paragraph_with_highlighting(
@@ -70,7 +308,7 @@ def _add_paragraph_with_highlighting(
     if highlight:
         from docx.enum.text import WD_COLOR_INDEX
 
-        run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
     return para
 
@@ -282,7 +520,7 @@ def _write_table_node(
                     if highlight:
                         from docx.enum.text import WD_COLOR_INDEX
 
-                        run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                        run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
 
 def _write_list_node(
@@ -308,7 +546,7 @@ def _write_list_node(
             if should_highlight:
                 from docx.enum.text import WD_COLOR_INDEX
 
-                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
 
 def insert_faq_section(
@@ -317,7 +555,13 @@ def insert_faq_section(
     highlight: bool = True,
 ) -> DocxDocument:
     """
-    Insert an FAQ section into the document.
+    Insert an FAQ section into the document with proper heading hierarchy.
+
+    Uses:
+    - H2 for section title
+    - H3 for each question
+    - Normal for each answer
+    - Green highlighting for new content (not yellow)
 
     Args:
         doc: python-docx Document to modify
@@ -327,33 +571,93 @@ def insert_faq_section(
     Returns:
         Modified document with FAQ section
     """
-    from docx.enum.text import WD_COLOR_INDEX
+    if not faq_content:
+        return doc
 
-    # Add FAQ heading
+    # Add FAQ heading (H2)
     faq_heading = doc.add_heading("Frequently Asked Questions", level=2)
     if highlight:
         for run in faq_heading.runs:
-            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+    # Add note about AI-generated content
+    note_para = doc.add_paragraph()
+    note_run = note_para.add_run("(AI-Generated Schema Markup Content)")
+    note_run.italic = True
+    note_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    note_run.font.size = Pt(9)
 
     # Add each Q&A pair
     for question, answer in faq_content:
-        # Add question as bold paragraph
-        q_para = doc.add_paragraph()
-        q_run = q_para.add_run(f"Q: {question}")
-        q_run.bold = True
+        # Add question as H3 heading with green highlight
+        q_heading = doc.add_heading(level=3)
+        q_run = q_heading.add_run(question)
         if highlight:
-            q_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+            q_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
-        # Add answer
+        # Add answer as normal paragraph with green highlight
         a_para = doc.add_paragraph()
-        a_run = a_para.add_run(f"A: {answer}")
+        a_run = a_para.add_run(answer)
         if highlight:
-            a_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
-
-        # Add spacing
-        doc.add_paragraph()
+            a_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
     return doc
+
+
+def add_faq_section_enhanced(
+    doc: DocxDocument,
+    faqs: list[dict[str, str]],
+    highlight: bool = True,
+) -> None:
+    """
+    Add FAQ section with proper heading hierarchy (dict-based input).
+
+    Uses:
+    - H2 for "Frequently Asked Questions" section header
+    - H3 for each question
+    - Normal for each answer
+    - Green highlighting for new content
+
+    Args:
+        doc: Document to add FAQs to
+        faqs: List of {"question": str, "answer": str} dicts
+        highlight: Whether to highlight as new content
+    """
+    if not faqs:
+        return
+
+    # Section header (H2)
+    section_header = doc.add_heading("Frequently Asked Questions", level=2)
+    if highlight:
+        for run in section_header.runs:
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+    # Add note about AI-generated content
+    note_para = doc.add_paragraph()
+    note_run = note_para.add_run("(AI-Generated Schema Markup Content)")
+    note_run.italic = True
+    note_run.font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    note_run.font.size = Pt(9)
+
+    # Add each FAQ
+    for faq in faqs:
+        question = faq.get("question", "")
+        answer = faq.get("answer", "")
+
+        if not question or not answer:
+            continue
+
+        # Question (H3) - with green highlight since it's new content
+        question_heading = doc.add_heading(level=3)
+        question_run = question_heading.add_run(question)
+        if highlight:
+            question_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+        # Answer (Normal) - with green highlight since it's new content
+        answer_para = doc.add_paragraph()
+        answer_run = answer_para.add_run(answer)
+        if highlight:
+            answer_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
 
 def insert_content_at_position(
@@ -386,7 +690,7 @@ def insert_content_at_position(
     if highlight:
         from docx.enum.text import WD_COLOR_INDEX
 
-        run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
     # Move the paragraph to the correct position
     if position < len(doc.paragraphs) - 1:
@@ -477,9 +781,7 @@ class DocxWriter:
             change_map: Optional mapping of changes for highlighting
             highlight_new: Whether to highlight new content
         """
-        import io as io_module
         from docx import Document
-        from docx.enum.text import WD_COLOR_INDEX
 
         doc = Document()
         _ensure_heading_styles(doc)
@@ -537,7 +839,7 @@ def merge_documents(
             if highlight_additions:
                 from docx.enum.text import WD_COLOR_INDEX
 
-                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
         elif position == "start":
             insert_content_at_position(doc, content, 0, highlight=highlight_additions)
         else:
@@ -553,7 +855,146 @@ def merge_documents(
                 if highlight_additions:
                     from docx.enum.text import WD_COLOR_INDEX
 
-                    run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                    run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
     doc.save(str(output_path))
     return output_path
+
+
+class OptimizedDocumentWriter:
+    """
+    Generates professionally formatted DOCX output with all enhancements.
+
+    Integrates:
+    - Proper heading styles (H1, H2, H3)
+    - Multi-color change highlighting (green/yellow/strikethrough)
+    - Document header with metadata
+    - Color legend
+    - FAQ sections with proper hierarchy
+    """
+
+    def __init__(self) -> None:
+        """Initialize the OptimizedDocumentWriter."""
+        pass
+
+    def create_document(self, content: OptimizedContent) -> DocxDocument:
+        """
+        Create a complete optimized document.
+
+        Args:
+            content: OptimizedContent object with all data
+
+        Returns:
+            A python-docx Document ready to save
+        """
+        doc = Document()
+
+        # Step 1: Setup styles
+        setup_document_styles(doc)
+        _ensure_heading_styles(doc)
+
+        # Step 2: Add header with metadata and legend
+        add_optimization_header(doc, content=content)
+
+        # Step 3: Add meta information section
+        self._add_meta_section(doc, content)
+
+        # Step 4: Add main content with change highlighting
+        self._add_body_content(doc, content)
+
+        # Step 5: Add FAQ section (if present)
+        if content.faq_items:
+            add_faq_section_enhanced(doc, content.faq_items, highlight=True)
+
+        return doc
+
+    def _add_meta_section(
+        self,
+        doc: DocxDocument,
+        content: OptimizedContent,
+    ) -> None:
+        """
+        Add meta title and description section.
+
+        Args:
+            doc: Document to add to
+            content: Content with meta information
+        """
+        if not content.meta_title and not content.meta_description:
+            return
+
+        # Section header
+        doc.add_heading("Meta Information", level=2)
+
+        # Meta Title
+        if content.meta_title:
+            title_label = doc.add_paragraph()
+            label_run = title_label.add_run("Meta Title: ")
+            label_run.bold = True
+
+            add_text_with_changes(title_label, content.meta_title.segments)
+
+        # Meta Description
+        if content.meta_description:
+            desc_label = doc.add_paragraph()
+            label_run = desc_label.add_run("Meta Description: ")
+            label_run.bold = True
+
+            add_text_with_changes(desc_label, content.meta_description.segments)
+
+        # Spacer
+        doc.add_paragraph()
+
+    def _add_body_content(
+        self,
+        doc: DocxDocument,
+        content: OptimizedContent,
+    ) -> None:
+        """
+        Add main body content with change highlighting.
+
+        Args:
+            doc: Document to add to
+            content: Content with body paragraphs
+        """
+        if not content.body_paragraphs:
+            return
+
+        for para_content in content.body_paragraphs:
+            add_paragraph_with_changes(doc, para_content)
+
+    def write_to_file(
+        self,
+        content: OptimizedContent,
+        output_path: str | Path,
+    ) -> Path:
+        """
+        Create and save an optimized document.
+
+        Args:
+            content: OptimizedContent object with all data
+            output_path: Where to save the document
+
+        Returns:
+            Path to the saved file
+        """
+        output_path = Path(output_path)
+        doc = self.create_document(content)
+        doc.save(str(output_path))
+        return output_path
+
+    def write_to_stream(
+        self,
+        content: OptimizedContent,
+        stream: io.BytesIO,
+    ) -> None:
+        """
+        Create and save an optimized document to a stream.
+
+        Args:
+            content: OptimizedContent object with all data
+            stream: BytesIO stream to write to
+        """
+        doc = self.create_document(content)
+        doc.save(stream)
+        stream.seek(0)
