@@ -27,6 +27,114 @@ class DiffConfidence(str, Enum):
     REVIEW_REQUIRED = "review_required"  # Must be reviewed by human
 
 
+class ChangeType(str, Enum):
+    """Type of change for visual highlighting."""
+
+    UNCHANGED = "unchanged"  # No change - no highlighting
+    INSERTED = "inserted"  # New content - green highlight
+    MODIFIED = "modified"  # Existing content changed - yellow highlight
+    DELETED = "deleted"  # Content removed - strikethrough + gray
+
+
+@dataclass
+class TextSegment:
+    """
+    A segment of text with its change status.
+
+    Used for fine-grained change tracking within paragraphs.
+    """
+
+    # The text content of this segment
+    text: str
+
+    # Type of change
+    change_type: ChangeType = ChangeType.UNCHANGED
+
+    # Original text (for MODIFIED segments)
+    original_text: str | None = None
+
+
+@dataclass
+class ParagraphContent:
+    """
+    A paragraph composed of multiple text segments with change tracking.
+
+    Allows granular highlighting within a single paragraph.
+    """
+
+    # Text segments with their change types
+    segments: list[TextSegment] = field(default_factory=list)
+
+    # Heading level (1, 2, 3 or None for body text)
+    heading_level: int | None = None
+
+    @property
+    def full_text(self) -> str:
+        """Get the full text content of all segments."""
+        return "".join(seg.text for seg in self.segments)
+
+    @property
+    def has_changes(self) -> bool:
+        """Check if this paragraph has any changes."""
+        return any(seg.change_type != ChangeType.UNCHANGED for seg in self.segments)
+
+
+@dataclass
+class OptimizedContent:
+    """
+    Complete optimized document structure with change tracking.
+
+    This is the input format for the enhanced DOCX writer.
+    """
+
+    # Document metadata
+    url: str = ""
+    target_keyword: str = ""
+    optimization_date: str = ""
+
+    # Meta information with change tracking
+    meta_title: ParagraphContent | None = None
+    meta_description: ParagraphContent | None = None
+
+    # Body content with change tracking
+    body_paragraphs: list[ParagraphContent] = field(default_factory=list)
+
+    # FAQ items (question, answer pairs)
+    faq_items: list[dict[str, str]] = field(default_factory=list)
+
+    # Change summary
+    change_summary: dict[str, int] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        """Calculate change summary if not provided."""
+        if not self.change_summary:
+            insertions = 0
+            modifications = 0
+            deletions = 0
+
+            all_paragraphs = self.body_paragraphs[:]
+            if self.meta_title:
+                all_paragraphs.append(self.meta_title)
+            if self.meta_description:
+                all_paragraphs.append(self.meta_description)
+
+            for para in all_paragraphs:
+                for seg in para.segments:
+                    if seg.change_type == ChangeType.INSERTED:
+                        insertions += 1
+                    elif seg.change_type == ChangeType.MODIFIED:
+                        modifications += 1
+                    elif seg.change_type == ChangeType.DELETED:
+                        deletions += 1
+
+            self.change_summary = {
+                "insertions": insertions,
+                "modifications": modifications,
+                "deletions": deletions,
+                "total": insertions + modifications + deletions,
+            }
+
+
 @dataclass
 class HighlightRegion:
     """
