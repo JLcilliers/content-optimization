@@ -49,10 +49,14 @@ from seo_optimizer.diffing.fingerprint import (
 from seo_optimizer.diffing.models import (
     Addition,
     ChangeSet,
+    ChangeType,
     DiffConfidence,
     DiffResult,
     DocumentFingerprint,
     HighlightRegion,
+    OptimizedContent,
+    ParagraphContent,
+    TextSegment,
 )
 from seo_optimizer.diffing.semantic import (
     CONSERVATIVE_THRESHOLD,
@@ -72,6 +76,7 @@ __all__ = [
     # Models
     "Addition",
     "ChangeSet",
+    "ChangeType",
     "ContentChunk",
     "DiffConfidence",
     "DiffConfig",
@@ -81,7 +86,10 @@ __all__ = [
     "MatchResult",
     "MatchType",
     "NGramFingerprint",
+    "OptimizedContent",
+    "ParagraphContent",
     "SimHashFingerprint",
+    "TextSegment",
     # Classes
     "ContentDiffer",
     "ContentFingerprinter",
