@@ -73,6 +73,9 @@ FAQ_SECTION_PATTERNS = [
     r"(?i)\b(common\s+questions|popular\s+questions)\b",
 ]
 
+# Regex pattern to strip [H1], [H2], [H3] markers from text
+HEADING_MARKER_PATTERN = re.compile(r"\[H[123]\]\s*", re.IGNORECASE)
+
 
 @dataclass
 class FAQGenerationResult:
@@ -229,7 +232,8 @@ class FAQGenerator:
                 if node.node_type == NodeType.HEADING:
                     level = node.metadata.get("level", node.metadata.get("heading_level", 2))
                     if level == 1:
-                        info["primary_topic"] = node.text_content.strip()
+                        # Strip [H*] markers from heading text
+                        info["primary_topic"] = self._strip_heading_markers(node.text_content)
                         info["primary_section"] = node.node_id
                         break
 
@@ -246,13 +250,15 @@ class FAQGenerator:
             if node.node_type == NodeType.HEADING:
                 level = node.metadata.get("level", node.metadata.get("heading_level", 2))
                 if level == 2:
-                    heading_text = node.text_content.strip()
+                    # Strip [H*] markers from heading text
+                    heading_text = self._strip_heading_markers(node.text_content)
                     info["key_points"].append(heading_text)
                     current_h2 = heading_text
                     info["section_content"][current_h2] = []
 
             elif node.node_type == NodeType.PARAGRAPH:
-                para_text = node.text_content.strip()
+                # Strip any [H*] markers that might appear in paragraphs
+                para_text = self._strip_heading_markers(node.text_content)
                 # Additional check: skip paragraphs that look like metadata
                 if para_text and len(para_text) > 20:
                     # Exclude paragraphs that contain URL patterns or metadata labels
@@ -313,6 +319,21 @@ class FAQGenerator:
                     return True
 
         return False
+
+    def _strip_heading_markers(self, text: str) -> str:
+        """
+        Strip [H1], [H2], [H3] markers from text.
+
+        These markers are from the document extraction and should not
+        appear in FAQ answers.
+
+        Args:
+            text: Text that may contain heading markers
+
+        Returns:
+            Cleaned text without heading markers
+        """
+        return HEADING_MARKER_PATTERN.sub("", text).strip()
 
     def _generate_questions(self, topic_info: dict) -> list[str]:
         """
@@ -492,7 +513,8 @@ class FAQGenerator:
             if should_skip_node(node):
                 continue
 
-            text = node.text_content
+            # Strip [H*] markers from content
+            text = self._strip_heading_markers(node.text_content)
             if not text or len(text) < 30:
                 continue
 
@@ -512,13 +534,15 @@ class FAQGenerator:
         relevant_paragraphs.sort(key=lambda x: x[0], reverse=True)
 
         if relevant_paragraphs:
+            # Content already has markers stripped
             return " ".join([p[1] for p in relevant_paragraphs[:2]])
 
         # Final fallback: use any substantial CONTENT paragraph (not metadata)
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH and len(node.text_content) > 50:
                 if not should_skip_node(node) and not self._is_metadata_paragraph(node.text_content):
-                    return node.text_content
+                    # Strip markers from fallback content too
+                    return self._strip_heading_markers(node.text_content)
 
         return ""
 

@@ -180,11 +180,14 @@ async def optimize_and_download(
         from seo_optimizer.ingestion.docx_parser import DocxParser
         from seo_optimizer.optimization.pipeline import OptimizationPipeline
         from seo_optimizer.optimization.models import OptimizationConfig
-        from seo_optimizer.output.docx_writer import DocxWriter
+        from seo_optimizer.output.docx_writer import PreservingDocxWriter
 
         # Read file content
         content = await file.read()
         file_stream = io.BytesIO(content)
+
+        # Keep a copy of the original stream for the preserving writer
+        original_stream = io.BytesIO(content)
 
         # Parse document
         parser = DocxParser()
@@ -219,14 +222,15 @@ async def optimize_and_download(
                 detail="Optimization failed"
             )
 
-        # Generate output document
-        writer = DocxWriter()
+        # Generate output document using PreservingDocxWriter
+        # This preserves original formatting, [H*] markers, bold, empty paragraphs
+        # and only highlights the actual inserted text
+        writer = PreservingDocxWriter()
         output_stream = io.BytesIO()
         writer.write_to_stream(
-            result.optimized_ast,
+            original_stream,
+            result.change_map or {},
             output_stream,
-            result.change_map,
-            highlight_new=True,
         )
         output_stream.seek(0)
 

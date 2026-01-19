@@ -1,13 +1,24 @@
 """
 DOCX Writer - Reconstructs DOCX with optimized content
 
-Reconstructs the DOCX file with:
-- Original content preserved exactly
-- New content inserted at appropriate positions
-- Highlighting applied via highlighter module
-- Proper heading styles (no [H1], [H2], [H3] markers)
-- Document header with optimization summary
-- Color legend for change tracking
+This module provides multiple writers for different use cases:
+
+1. PreservingDocxWriter (RECOMMENDED for user-facing output):
+   - Copies the original document exactly
+   - Preserves [H1], [H2], [H3] markers in text
+   - Preserves bold, italic, and all formatting
+   - Preserves empty paragraphs
+   - ONLY highlights the actual inserted text (not entire paragraphs)
+   - Appends FAQ section at the end with green highlighting
+
+2. DocxWriter (for AST-based output):
+   - Creates a new document from AST
+   - Converts [H*] markers to Word heading styles
+   - Rebuilds document structure
+
+3. OptimizedDocumentWriter (for OptimizedContent objects):
+   - Creates professional document with header and legend
+   - Full change tracking with colors
 
 Reference: docs/research/06-docx-output.md
 """
@@ -1224,3 +1235,256 @@ class OptimizedDocumentWriter:
         doc = self.create_document(content)
         doc.save(stream)
         stream.seek(0)
+
+
+class PreservingDocxWriter:
+    """
+    DOCX writer that PRESERVES the original document format.
+
+    This writer:
+    - Copies the original document exactly
+    - Preserves [H*] markers in text (does NOT convert to styles)
+    - Preserves bold, italic, and other formatting
+    - Preserves empty paragraphs
+    - Preserves original styles
+    - ONLY highlights the actual inserted text, not entire paragraphs
+
+    Use this instead of DocxWriter when you want minimal changes to the original.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the PreservingDocxWriter."""
+        pass
+
+    def write_to_stream(
+        self,
+        original_stream: io.BytesIO,
+        change_map: dict,
+        output_stream: io.BytesIO,
+    ) -> None:
+        """
+        Write optimized document preserving original format.
+
+        Args:
+            original_stream: BytesIO stream of the original DOCX
+            change_map: Change map from optimization pipeline
+            output_stream: BytesIO stream to write output to
+        """
+        # Load the original document
+        original_stream.seek(0)
+        doc: DocxDocument = Document(original_stream)
+
+        # Apply text insertions with precise highlighting
+        text_insertions = change_map.get("text_insertions", [])
+        self._apply_text_insertions(doc, text_insertions)
+
+        # Add new nodes (FAQ section) at the end
+        new_nodes = change_map.get("new_nodes", [])
+        faq_section = change_map.get("faq_section")
+        if faq_section or any(n.get("node_id", "").startswith("faq_") for n in new_nodes):
+            self._add_faq_section(doc, new_nodes)
+
+        # Save to output stream
+        doc.save(output_stream)
+        output_stream.seek(0)
+
+    def _apply_text_insertions(
+        self,
+        doc: DocxDocument,
+        text_insertions: list[dict],
+    ) -> None:
+        """
+        Apply text insertions with precise highlighting.
+
+        For each insertion, finds the paragraph with the original text
+        and replaces it with the new text, highlighting ONLY the difference.
+
+        Args:
+            doc: Document to modify
+            text_insertions: List of insertion dicts with original/new text
+        """
+        for insertion in text_insertions:
+            original_text = insertion.get("original", "")
+            new_text = insertion.get("new", "")
+
+            if not original_text or not new_text or original_text == new_text:
+                continue
+
+            # Find the paragraph containing the original text
+            para_found = False
+            for para in doc.paragraphs:
+                para_text = para.text
+
+                # Check if this paragraph matches the original
+                if original_text in para_text or para_text == original_text:
+                    # Found the paragraph - apply the change
+                    self._replace_text_with_highlight(para, original_text, new_text)
+                    para_found = True
+                    break
+
+            # If exact match not found, try finding by significant overlap
+            if not para_found:
+                # Try finding by first 50 characters of original
+                search_key = original_text[:50] if len(original_text) > 50 else original_text
+                for para in doc.paragraphs:
+                    if search_key in para.text:
+                        self._replace_text_with_highlight(para, original_text, new_text)
+                        break
+
+    def _replace_text_with_highlight(
+        self,
+        para: Paragraph,
+        original_text: str,
+        new_text: str,
+    ) -> None:
+        """
+        Replace original text with new text, highlighting only the inserted portion.
+
+        Args:
+            para: Paragraph to modify
+            original_text: Original text to find
+            new_text: New text to replace with
+        """
+        # Find what was inserted (the difference)
+        inserted_text = self._find_insertion_diff(original_text, new_text)
+
+        if not inserted_text:
+            return
+
+        # Find where the insertion is in the new text
+        insert_pos = new_text.find(inserted_text)
+        if insert_pos == -1:
+            return
+
+        # Text before and after the insertion
+        before_text = new_text[:insert_pos]
+        after_text = new_text[insert_pos + len(inserted_text):]
+
+        # Get original formatting from first run
+        original_formatting = {}
+        if para.runs:
+            first_run = para.runs[0]
+            original_formatting = {
+                "bold": first_run.bold,
+                "italic": first_run.italic,
+                "underline": first_run.underline,
+                "font_name": first_run.font.name,
+                "font_size": first_run.font.size,
+            }
+
+        # Clear the paragraph
+        for run in para.runs:
+            run.text = ""
+
+        # Rebuild with highlighting
+        if before_text:
+            before_run = para.add_run(before_text)
+            self._apply_formatting(before_run, original_formatting)
+
+        # Add the inserted text with green highlight
+        insert_run = para.add_run(inserted_text)
+        self._apply_formatting(insert_run, original_formatting)
+        insert_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+        if after_text:
+            after_run = para.add_run(after_text)
+            self._apply_formatting(after_run, original_formatting)
+
+    def _find_insertion_diff(self, original: str, new: str) -> str:
+        """
+        Find the text that was inserted (difference between original and new).
+
+        Args:
+            original: Original text
+            new: New text (should be longer or contain insertion)
+
+        Returns:
+            The inserted text
+        """
+        # Use difflib to find the actual insertion
+        import difflib
+
+        # Simple approach: find the longest common substring approach
+        # The insertion is what's in new but not in original
+
+        # Find where original starts in new
+        if original in new:
+            # Original is a substring - insertion is elsewhere
+            # This shouldn't happen in our case
+            return ""
+
+        # Use SequenceMatcher to find the difference
+        matcher = difflib.SequenceMatcher(None, original, new)
+        opcodes = matcher.get_opcodes()
+
+        inserted_parts = []
+        for tag, i1, i2, j1, j2 in opcodes:
+            if tag == "insert":
+                # Text that exists in new but not in original
+                inserted_parts.append(new[j1:j2])
+            elif tag == "replace":
+                # Replacement - the new part is inserted, old part removed
+                inserted_parts.append(new[j1:j2])
+
+        return "".join(inserted_parts)
+
+    def _apply_formatting(self, run, formatting: dict) -> None:
+        """Apply formatting to a run."""
+        if formatting.get("bold"):
+            run.bold = formatting["bold"]
+        if formatting.get("italic"):
+            run.italic = formatting["italic"]
+        if formatting.get("underline"):
+            run.underline = formatting["underline"]
+        if formatting.get("font_name"):
+            run.font.name = formatting["font_name"]
+        if formatting.get("font_size"):
+            run.font.size = formatting["font_size"]
+
+    def _add_faq_section(
+        self,
+        doc: DocxDocument,
+        new_nodes: list[dict],
+    ) -> None:
+        """
+        Add FAQ section at the end of the document.
+
+        FAQ nodes are entirely new, so they're fully highlighted.
+
+        Args:
+            doc: Document to add FAQ to
+            new_nodes: List of new node dicts
+        """
+        # Filter to FAQ nodes only
+        faq_nodes = [n for n in new_nodes if n.get("node_id", "").startswith("faq_")]
+
+        if not faq_nodes:
+            return
+
+        # Add blank line before FAQ
+        doc.add_paragraph()
+
+        # Add FAQ section header
+        faq_header = doc.add_paragraph()
+        header_run = faq_header.add_run("Frequently Asked Questions")
+        header_run.bold = True
+        header_run.font.size = Pt(16)
+        header_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+        # Add FAQ items
+        current_question = None
+        for node in faq_nodes:
+            content = node.get("content", "")
+            node_type = node.get("type", "")
+
+            if node_type == "heading":
+                # This is a question
+                q_para = doc.add_paragraph()
+                q_run = q_para.add_run(content)
+                q_run.bold = True
+                q_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+            else:
+                # This is an answer
+                a_para = doc.add_paragraph()
+                a_run = a_para.add_run(content)
+                a_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
