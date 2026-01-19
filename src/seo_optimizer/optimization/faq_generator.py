@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 from seo_optimizer.ingestion.models import DocumentAST, NodeType
 
+from .content_zones import should_skip_node
 from .guardrails import SafetyGuardrails
 from .models import FAQEntry, OptimizationConfig
 
@@ -233,10 +234,15 @@ class FAQGenerator:
                         break
 
         # Extract key points from H2 headings AND build section content map
+        # IMPORTANT: Skip metadata nodes (URL, Meta Title, etc.)
         current_h2 = None
         all_paragraphs: list[str] = []
 
         for node in ast.nodes:
+            # Skip metadata fields - only process actual content
+            if should_skip_node(node):
+                continue
+
             if node.node_type == NodeType.HEADING:
                 level = node.metadata.get("level", node.metadata.get("heading_level", 2))
                 if level == 2:
@@ -247,12 +253,15 @@ class FAQGenerator:
 
             elif node.node_type == NodeType.PARAGRAPH:
                 para_text = node.text_content.strip()
+                # Additional check: skip paragraphs that look like metadata
                 if para_text and len(para_text) > 20:
-                    all_paragraphs.append(para_text)
-                    if current_h2 and current_h2 in info["section_content"]:
-                        info["section_content"][current_h2].append(para_text)
+                    # Exclude paragraphs that contain URL patterns or metadata labels
+                    if not self._is_metadata_paragraph(para_text):
+                        all_paragraphs.append(para_text)
+                        if current_h2 and current_h2 in info["section_content"]:
+                            info["section_content"][current_h2].append(para_text)
 
-        # Build content summary from first few paragraphs
+        # Build content summary from first few CONTENT paragraphs only
         info["content_summary"] = " ".join(all_paragraphs[:5])
 
         # Use semantic entities if available
@@ -268,6 +277,42 @@ class FAQGenerator:
                     )
 
         return info
+
+    def _is_metadata_paragraph(self, text: str) -> bool:
+        """
+        Check if a paragraph contains metadata rather than content.
+
+        Args:
+            text: Paragraph text to check
+
+        Returns:
+            True if the paragraph is metadata
+        """
+        text_lower = text.lower().strip()
+
+        # Check for URL patterns
+        if re.match(r"^https?://", text):
+            return True
+
+        # Check for metadata labels
+        metadata_labels = [
+            "url:", "meta title:", "meta description:",
+            "page content", "seo information", "document information"
+        ]
+        for label in metadata_labels:
+            if text_lower.startswith(label):
+                return True
+
+        # Check if it's primarily a URL (contains URL with minimal other text)
+        if "://" in text and len(text) < 200:
+            # Check ratio of URL to other content
+            url_match = re.search(r"https?://\S+", text)
+            if url_match:
+                url_len = len(url_match.group())
+                if url_len > len(text) * 0.5:  # URL is >50% of content
+                    return True
+
+        return False
 
     def _generate_questions(self, topic_info: dict) -> list[str]:
         """
@@ -443,8 +488,16 @@ class FAQGenerator:
             if node.node_type != NodeType.PARAGRAPH:
                 continue
 
+            # Skip metadata nodes
+            if should_skip_node(node):
+                continue
+
             text = node.text_content
             if not text or len(text) < 30:
+                continue
+
+            # Additional check for metadata content
+            if self._is_metadata_paragraph(text):
                 continue
 
             text_lower = text.lower()
@@ -461,10 +514,11 @@ class FAQGenerator:
         if relevant_paragraphs:
             return " ".join([p[1] for p in relevant_paragraphs[:2]])
 
-        # Final fallback: use any substantial paragraph
+        # Final fallback: use any substantial CONTENT paragraph (not metadata)
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH and len(node.text_content) > 50:
-                return node.text_content
+                if not should_skip_node(node) and not self._is_metadata_paragraph(node.text_content):
+                    return node.text_content
 
         return ""
 

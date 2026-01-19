@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from seo_optimizer.ingestion.models import DocumentAST, NodeType
 
+from .content_zones import filter_content_nodes, should_skip_node, validate_insertion
 from .guardrails import SafetyGuardrails
 from .models import ChangeType, OptimizationChange, OptimizationConfig
 
@@ -136,13 +137,22 @@ class KeywordInjector:
         if keyword.lower() in first_100.lower():
             return None  # Already present
 
-        # Find first paragraph to modify
+        # Find first CONTENT paragraph to modify (skip metadata)
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH and node.text_content.strip():
+                # Skip metadata fields (URL, Meta Title, etc.)
+                if should_skip_node(node):
+                    continue
+
                 original = node.text_content
                 modified = self._insert_keyword_naturally(original, keyword, position="early")
 
                 if modified and modified != original:
+                    # Validate the insertion is grammatically sound
+                    is_valid, reason = validate_insertion(original, modified)
+                    if not is_valid:
+                        continue  # Skip this insertion and try next paragraph
+
                     # Check if change passes guardrails
                     if self.guardrails.would_exceed_density(ast.full_text, keyword, 1):
                         return None
@@ -158,7 +168,6 @@ class KeywordInjector:
                         full_original=original,
                         full_optimized=modified,
                     )
-                break
 
         return None
 
@@ -274,8 +283,10 @@ class KeywordInjector:
         # Track which keywords have been injected
         injected: set[str] = set()
 
+        # Get only CONTENT paragraphs (exclude metadata like URL, Meta Title, etc.)
         paragraphs = [
-            node for node in ast.nodes if node.node_type == NodeType.PARAGRAPH
+            node for node in ast.nodes
+            if node.node_type == NodeType.PARAGRAPH and not should_skip_node(node)
         ]
 
         # Distribute keywords across paragraphs
@@ -293,6 +304,11 @@ class KeywordInjector:
             modified = self._insert_keyword_naturally(original, keyword, position="natural")
 
             if modified and modified != original:
+                # Validate the insertion is grammatically sound
+                is_valid, reason = validate_insertion(original, modified)
+                if not is_valid:
+                    continue  # Skip this insertion
+
                 changes.append(
                     OptimizationChange(
                         change_type=ChangeType.KEYWORD,
@@ -330,10 +346,11 @@ class KeywordInjector:
         if density_check.density >= self.config.min_keyword_density:
             return changes  # Already at or above minimum
 
-        # Find paragraphs where we could add mentions
+        # Find CONTENT paragraphs where we could add mentions (exclude metadata)
         words_since_last = MIN_KEYWORD_GAP  # Allow first injection
         paragraphs = [
-            node for node in ast.nodes if node.node_type == NodeType.PARAGRAPH
+            node for node in ast.nodes
+            if node.node_type == NodeType.PARAGRAPH and not should_skip_node(node)
         ]
 
         for node in paragraphs:
@@ -357,6 +374,11 @@ class KeywordInjector:
                 )
 
                 if modified and modified != original:
+                    # Validate the insertion is grammatically sound
+                    is_valid, reason = validate_insertion(original, modified)
+                    if not is_valid:
+                        continue  # Skip this insertion
+
                     changes.append(
                         OptimizationChange(
                             change_type=ChangeType.KEYWORD,
@@ -474,10 +496,13 @@ class KeywordInjector:
             return f"When using {keyword}, {sentence[0].lower()}{sentence[1:]}"
 
         # Strategy 3: Add as specification at end
+        # Note: When called from _insert_keyword_naturally, sentences are split
+        # with punctuation captured separately, so we should NOT add a period here.
+        # The original punctuation will be re-added during the join.
         if len(sentence) < 100 and not sentence.rstrip().endswith((",", ":", ";")):
-            # Add as trailing context
+            # Add as trailing context (no period - will be added by rejoin)
             clean_sentence = sentence.rstrip(".")
-            return f"{clean_sentence}, especially for {keyword}."
+            return f"{clean_sentence}, especially for {keyword}"
 
         return None
 

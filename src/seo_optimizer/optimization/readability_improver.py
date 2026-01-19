@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 from seo_optimizer.ingestion.models import ContentNode, DocumentAST, NodeType
 
+from .content_zones import should_skip_node
 from .guardrails import SafetyGuardrails
 from .models import ChangeType, OptimizationChange, OptimizationConfig
 
@@ -111,9 +112,13 @@ class ReadabilityImprover:
 
         changes: list[OptimizationChange] = []
 
-        # Process each paragraph
+        # Process each CONTENT paragraph (skip metadata like URL, Meta Title, etc.)
         for node in ast.nodes:
             if node.node_type != NodeType.PARAGRAPH:
+                continue
+
+            # Skip metadata fields
+            if should_skip_node(node):
                 continue
 
             # Split complex sentences
@@ -426,10 +431,13 @@ class ReadabilityImprover:
         """
         changes: list[OptimizationChange] = []
 
-        # Extract all sentences from document
+        # Extract all sentences from CONTENT paragraphs (skip metadata)
         all_sentences: list[str] = []
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH:
+                # Skip metadata fields
+                if should_skip_node(node):
+                    continue
                 sentences = self._extract_sentences(node.text_content)
                 all_sentences.extend(sentences)
 

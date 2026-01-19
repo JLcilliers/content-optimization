@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 from seo_optimizer.ingestion.models import ContentNode, DocumentAST, NodeType
 
+from .content_zones import should_skip_node, validate_insertion
 from .guardrails import SafetyGuardrails
 from .models import ChangeType, OptimizationChange, OptimizationConfig
 
@@ -116,9 +117,10 @@ class EntityEnricher:
         if not density_check.is_safe:
             return changes  # Already too dense
 
-        # Inject missing entities
+        # Inject missing entities - only in CONTENT paragraphs (skip metadata)
         paragraphs = [
-            node for node in ast.nodes if node.node_type == NodeType.PARAGRAPH
+            node for node in ast.nodes
+            if node.node_type == NodeType.PARAGRAPH and not should_skip_node(node)
         ]
 
         for i, entity in enumerate(list(missing_entities)[:5]):  # Limit to 5
@@ -267,9 +269,13 @@ class EntityEnricher:
             if entity in entity_definitions:
                 definition = entity_definitions[entity]
 
-                # Find where to add context
+                # Find where to add context (skip metadata nodes)
                 for node in ast.nodes:
                     if node.node_type != NodeType.PARAGRAPH:
+                        continue
+
+                    # Skip metadata fields
+                    if should_skip_node(node):
                         continue
 
                     if entity in node.text_content:
