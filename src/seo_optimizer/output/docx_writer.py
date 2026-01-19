@@ -549,6 +549,215 @@ def _write_list_node(
                 run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
 
+def _write_node_to_document_enhanced(
+    doc: DocxDocument,
+    node: ContentNode,
+    highlight_new: bool,
+    new_node_ids: set[str],
+    modified_node_ids: set[str],
+    text_insertions: list[dict],
+) -> None:
+    """
+    Write a single AST node to the document with enhanced highlighting.
+
+    Handles:
+    - [H1], [H2], [H3] marker parsing
+    - New node highlighting (entirely new content)
+    - Modified node highlighting (inline changes)
+    - Character-level text insertion highlighting
+
+    Args:
+        doc: Document to write to
+        node: Node to write
+        highlight_new: Whether to highlight
+        new_node_ids: Set of new node IDs (highlight entire node)
+        modified_node_ids: Set of modified node IDs (has inline changes)
+        text_insertions: List of text insertion details for precise highlighting
+    """
+    is_new_node = highlight_new and node.node_id in new_node_ids
+    is_modified_node = highlight_new and node.node_id in modified_node_ids
+
+    text_content = node.text_content
+
+    # Check for [H*] heading markers in text
+    heading_match = HEADING_PATTERN.match(text_content)
+
+    if node.node_type == NodeType.HEADING or heading_match:
+        # Determine heading level and clean text
+        if heading_match:
+            level = int(heading_match.group(1))
+            clean_text = heading_match.group(2).strip()
+        else:
+            level = node.metadata.get("heading_level", node.metadata.get("level", 2))
+            clean_text = text_content
+
+        style = f"Heading {level}"
+        para = doc.add_paragraph()
+        with contextlib.suppress(KeyError):
+            para.style = style
+
+        run = para.add_run(clean_text)
+
+        # Apply explicit font styling to ensure Poppins is used
+        run.font.name = "Poppins"
+        if level == 1:
+            run.font.size = Pt(24)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x1B, 0x4F, 0x72)
+        elif level == 2:
+            run.font.size = Pt(18)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x28, 0x74, 0xA6)
+        elif level == 3:
+            run.font.size = Pt(14)
+            run.font.bold = True
+            run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
+
+        if is_new_node:
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+    elif node.node_type == NodeType.PARAGRAPH:
+        para = doc.add_paragraph()
+
+        # Check if this node has character-level changes
+        node_insertions = [
+            ins for ins in text_insertions if ins.get("section_id") == node.node_id
+        ]
+
+        if is_new_node:
+            # Entire paragraph is new - highlight it all
+            run = para.add_run(text_content)
+            run.font.name = "Poppins"
+            run.font.size = Pt(12)
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+        elif is_modified_node and node_insertions:
+            # Has inline changes - apply character-level highlighting
+            _write_paragraph_with_inline_highlights(
+                para, text_content, node_insertions
+            )
+
+        else:
+            # No changes - just write the text
+            run = para.add_run(text_content)
+            run.font.name = "Poppins"
+            run.font.size = Pt(12)
+
+    elif node.node_type == NodeType.TABLE:
+        _write_table_node(doc, node, is_new_node)
+
+    elif node.node_type == NodeType.LIST:
+        _write_list_node_enhanced(
+            doc, node, highlight_new, new_node_ids, modified_node_ids, text_insertions
+        )
+
+    # Handle child nodes (for complex structures)
+    for child in node.children:
+        if node.node_type not in (NodeType.TABLE, NodeType.LIST):
+            _write_node_to_document_enhanced(
+                doc, child, highlight_new, new_node_ids, modified_node_ids, text_insertions
+            )
+
+
+def _write_paragraph_with_inline_highlights(
+    para: Paragraph,
+    text_content: str,
+    insertions: list[dict],
+) -> None:
+    """
+    Write a paragraph with inline highlighting for character-level changes.
+
+    Args:
+        para: Paragraph to write to
+        text_content: Full text content
+        insertions: List of insertion details with 'original' and 'new' text
+    """
+    # Build a map of text ranges to highlight
+    # For simplicity, we'll highlight the new text where it appears
+    remaining_text = text_content
+    current_pos = 0
+
+    for insertion in insertions:
+        new_text = insertion.get("new", "")
+        original_text = insertion.get("original", "")
+
+        if new_text and new_text in remaining_text:
+            # Find where the new text appears
+            new_pos = remaining_text.find(new_text)
+
+            if new_pos > 0:
+                # Add text before the change (unhighlighted)
+                pre_text = remaining_text[:new_pos]
+                run = para.add_run(pre_text)
+                run.font.name = "Poppins"
+                run.font.size = Pt(12)
+
+            # Add the new/changed text (highlighted)
+            run = para.add_run(new_text)
+            run.font.name = "Poppins"
+            run.font.size = Pt(12)
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+
+            # Update remaining text
+            remaining_text = remaining_text[new_pos + len(new_text):]
+            current_pos = 0
+
+    # Add any remaining text (unhighlighted)
+    if remaining_text:
+        run = para.add_run(remaining_text)
+        run.font.name = "Poppins"
+        run.font.size = Pt(12)
+
+
+def _write_list_node_enhanced(
+    doc: DocxDocument,
+    node: ContentNode,
+    highlight_new: bool,
+    new_node_ids: set[str],
+    modified_node_ids: set[str],
+    text_insertions: list[dict],
+) -> None:
+    """
+    Write a list node with enhanced highlighting support.
+
+    Args:
+        doc: Document to write to
+        node: List node
+        highlight_new: Whether to highlight
+        new_node_ids: Set of new node IDs
+        modified_node_ids: Set of modified node IDs
+        text_insertions: Text insertion details
+    """
+    for item in node.children:
+        if item.node_type == NodeType.LIST_ITEM:
+            is_new = highlight_new and item.node_id in new_node_ids
+            is_modified = highlight_new and item.node_id in modified_node_ids
+
+            para = doc.add_paragraph(style="List Bullet")
+
+            if is_new:
+                run = para.add_run(item.text_content)
+                run.font.name = "Poppins"
+                run.font.size = Pt(12)
+                run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+            elif is_modified:
+                item_insertions = [
+                    ins for ins in text_insertions if ins.get("section_id") == item.node_id
+                ]
+                if item_insertions:
+                    _write_paragraph_with_inline_highlights(
+                        para, item.text_content, item_insertions
+                    )
+                else:
+                    run = para.add_run(item.text_content)
+                    run.font.name = "Poppins"
+                    run.font.size = Pt(12)
+            else:
+                run = para.add_run(item.text_content)
+                run.font.name = "Poppins"
+                run.font.size = Pt(12)
+
+
 def insert_faq_section(
     doc: DocxDocument,
     faq_content: list[tuple[str, str]],
@@ -784,10 +993,16 @@ class DocxWriter:
         from docx import Document
 
         doc = Document()
+
+        # CRITICAL: Setup document styles for Poppins font and proper sizing
+        setup_document_styles(doc)
         _ensure_heading_styles(doc)
 
         # Determine which nodes are new based on change_map
         new_node_ids: set[str] = set()
+        modified_node_ids: set[str] = set()
+        text_insertions: list[dict] = []
+
         if change_map:
             # new_nodes contains dicts with node_id, extract just the IDs
             new_nodes = change_map.get("new_nodes", [])
@@ -797,8 +1012,19 @@ class DocxWriter:
                 elif isinstance(node_info, str):
                     new_node_ids.add(node_info)
 
+            # modified_nodes - body paragraphs with inline changes
+            modified_nodes = change_map.get("modified_nodes", [])
+            for node_id in modified_nodes:
+                if isinstance(node_id, str):
+                    modified_node_ids.add(node_id)
+
+            # text_insertions - character-level changes within paragraphs
+            text_insertions = change_map.get("text_insertions", [])
+
         for node in ast.nodes:
-            _write_node_to_document(doc, node, highlight_new, new_node_ids)
+            _write_node_to_document_enhanced(
+                doc, node, highlight_new, new_node_ids, modified_node_ids, text_insertions
+            )
 
         # Save to stream
         doc.save(stream)

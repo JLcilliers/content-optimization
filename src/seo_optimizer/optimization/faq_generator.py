@@ -210,6 +210,8 @@ class FAQGenerator:
             "key_points": [],
             "entities": [],
             "primary_section": "",
+            "content_summary": "",  # Full text for context
+            "section_content": {},  # Map of H2 -> following paragraphs
         }
 
         # Use primary keyword if available
@@ -224,18 +226,34 @@ class FAQGenerator:
         if not info["primary_topic"]:
             for node in ast.nodes:
                 if node.node_type == NodeType.HEADING:
-                    level = node.metadata.get("level", 2)
+                    level = node.metadata.get("level", node.metadata.get("heading_level", 2))
                     if level == 1:
                         info["primary_topic"] = node.text_content.strip()
                         info["primary_section"] = node.node_id
                         break
 
-        # Extract key points from H2 headings
+        # Extract key points from H2 headings AND build section content map
+        current_h2 = None
+        all_paragraphs: list[str] = []
+
         for node in ast.nodes:
             if node.node_type == NodeType.HEADING:
-                level = node.metadata.get("level", 2)
+                level = node.metadata.get("level", node.metadata.get("heading_level", 2))
                 if level == 2:
-                    info["key_points"].append(node.text_content.strip())
+                    heading_text = node.text_content.strip()
+                    info["key_points"].append(heading_text)
+                    current_h2 = heading_text
+                    info["section_content"][current_h2] = []
+
+            elif node.node_type == NodeType.PARAGRAPH:
+                para_text = node.text_content.strip()
+                if para_text and len(para_text) > 20:
+                    all_paragraphs.append(para_text)
+                    if current_h2 and current_h2 in info["section_content"]:
+                        info["section_content"][current_h2].append(para_text)
+
+        # Build content summary from first few paragraphs
+        info["content_summary"] = " ".join(all_paragraphs[:5])
 
         # Use semantic entities if available
         if self.config.semantic_entities:
@@ -354,8 +372,8 @@ class FAQGenerator:
         if not topic:
             return None
 
-        # Extract relevant content for the answer
-        relevant_content = self._find_relevant_content(question, ast)
+        # Extract relevant content for the answer (passing topic_info for section mapping)
+        relevant_content = self._find_relevant_content(question, ast, topic_info)
 
         # Generate answer based on question type
         question_lower = question.lower()
@@ -383,13 +401,16 @@ class FAQGenerator:
 
         return answer
 
-    def _find_relevant_content(self, question: str, ast: DocumentAST) -> str:
+    def _find_relevant_content(self, question: str, ast: DocumentAST, topic_info: dict | None = None) -> str:
         """
         Find content relevant to answering the question.
+
+        Uses section content map for better matching, falls back to paragraph search.
 
         Args:
             question: The question
             ast: Document AST
+            topic_info: Optional topic info with section content map
 
         Returns:
             Relevant content string
@@ -401,6 +422,21 @@ class FAQGenerator:
         # Remove common question words
         question_words -= {"what", "does", "should", "know", "about", "which", "where", "when", "that", "this", "with", "from", "have", "will", "would", "could"}
 
+        # First, try to find matching section from topic_info
+        if topic_info and "section_content" in topic_info:
+            section_content = topic_info.get("section_content", {})
+            for heading, paragraphs in section_content.items():
+                heading_lower = heading.lower()
+                # Check if heading matches question keywords
+                heading_score = sum(1 for word in question_words if word in heading_lower)
+                if heading_score > 0 and paragraphs:
+                    return " ".join(paragraphs[:2])
+
+            # Also check content_summary as fallback
+            content_summary = topic_info.get("content_summary", "")
+            if content_summary and len(content_summary) > 50:
+                return content_summary
+
         relevant_paragraphs: list[tuple[int, str]] = []
 
         for node in ast.nodes:
@@ -408,6 +444,9 @@ class FAQGenerator:
                 continue
 
             text = node.text_content
+            if not text or len(text) < 30:
+                continue
+
             text_lower = text.lower()
 
             # Score relevance by term overlap
@@ -422,117 +461,182 @@ class FAQGenerator:
         if relevant_paragraphs:
             return " ".join([p[1] for p in relevant_paragraphs[:2]])
 
+        # Final fallback: use any substantial paragraph
+        for node in ast.nodes:
+            if node.node_type == NodeType.PARAGRAPH and len(node.text_content) > 50:
+                return node.text_content
+
         return ""
 
     def _generate_definition_answer(self, topic: str, context: str) -> str:
-        """Generate a definition-style answer."""
+        """Generate a definition-style answer using actual content."""
         # Extract key information from context
         key_info = self._extract_key_info(context, max_phrases=3)
 
-        if key_info:
-            answer = f"{topic} is a {key_info[0]} that {key_info[1] if len(key_info) > 1 else 'helps users achieve their goals'}."
+        if key_info and len(key_info) >= 2:
+            answer = f"{topic} is {key_info[0]}. {key_info[1].capitalize()}."
             if len(key_info) > 2:
-                answer += f" It {key_info[2]}."
+                answer += f" {key_info[2].capitalize()}."
+        elif context and len(context) > 50:
+            # Use first sentence from context directly
+            first_sentence = self._get_first_sentences(context, 2)
+            answer = f"{topic} refers to {first_sentence.lower() if not first_sentence[0].isupper() else first_sentence}"
         else:
+            # Minimal fallback - at least name the topic clearly
             answer = (
-                f"{topic} is a solution designed to help users achieve specific goals efficiently. "
-                f"It provides tools and features that streamline processes and improve outcomes. "
-                f"Users can benefit from its practical approach to solving common challenges."
+                f"{topic} is a concept that involves specific practices and approaches. "
+                f"Understanding {topic} requires examining its core components and applications. "
+                f"This topic covers important aspects that affect how the process works."
             )
 
         return answer
 
     def _generate_benefits_answer(self, topic: str, context: str) -> str:
-        """Generate a benefits-focused answer."""
+        """Generate a benefits-focused answer using actual content."""
         benefits = self._extract_benefits(context)
 
         if benefits and len(benefits) >= 2:
             answer = f"The main benefits of {topic} include {benefits[0]} and {benefits[1]}."
             if len(benefits) > 2:
-                answer += f" Additionally, users can expect {benefits[2]}."
+                answer += f" Additionally, {benefits[2]}."
+        elif context and len(context) > 50:
+            # Extract from context directly
+            key_points = self._get_first_sentences(context, 2)
+            answer = f"The key benefits of {topic} are described as follows: {key_points}"
         else:
             answer = (
-                f"The key benefits of {topic} include improved efficiency, better results, and time savings. "
-                f"Users often report increased productivity and streamlined workflows after adoption. "
-                f"These advantages make it a valuable choice for those seeking practical solutions."
+                f"The benefits of {topic} depend on how it is implemented and used. "
+                f"Proper application of {topic} principles can lead to better outcomes. "
+                f"Understanding these benefits helps in making informed decisions."
             )
 
         return answer
 
     def _generate_explanation_answer(self, topic: str, context: str) -> str:
-        """Generate an explanation-style answer."""
+        """Generate an explanation-style answer using actual content."""
         processes = self._extract_processes(context)
 
         if processes:
             answer = f"{topic} works by {processes[0]}."
             if len(processes) > 1:
-                answer += f" It then {processes[1]} to deliver results."
+                answer += f" The process involves {processes[1]}."
+        elif context and len(context) > 50:
+            # Use context to explain
+            explanation = self._get_first_sentences(context, 2)
+            answer = f"{topic} involves a process where {explanation.lower() if explanation else 'specific steps are followed'}."
         else:
             answer = (
-                f"{topic} works by analyzing inputs and applying proven methods to generate outputs. "
-                f"The process involves multiple steps that ensure quality and accuracy. "
-                f"Users interact through an intuitive interface that guides them through each stage."
+                f"{topic} works through a series of defined steps and procedures. "
+                f"The approach requires understanding the underlying principles involved. "
+                f"Each component of {topic} contributes to the overall process."
             )
 
         return answer
 
     def _generate_howto_answer(self, topic: str, context: str) -> str:
-        """Generate a how-to style answer."""
+        """Generate a how-to style answer using actual content."""
         steps = self._extract_steps(context)
 
         if steps and len(steps) >= 2:
             answer = f"To get started with {topic}, first {steps[0]}. Then, {steps[1]}."
             if len(steps) > 2:
-                answer += f" Finally, {steps[2]} to complete the process."
+                answer += f" Finally, {steps[2]}."
+        elif context and len(context) > 50:
+            # Use context for guidance
+            guidance = self._get_first_sentences(context, 2)
+            answer = f"Getting started with {topic} involves: {guidance}"
         else:
             answer = (
-                f"Getting started with {topic} is straightforward. Begin by reviewing the available options "
-                f"and selecting the approach that fits your needs. Follow the guided setup process, "
-                f"and start with basic features before exploring advanced capabilities."
+                f"Getting started with {topic} requires following specific steps. "
+                f"Begin by understanding the basic requirements and prerequisites. "
+                f"Then proceed with the implementation according to established guidelines."
             )
 
         return answer
 
     def _generate_reasoning_answer(self, topic: str, context: str) -> str:
-        """Generate a reasoning-style answer."""
+        """Generate a reasoning-style answer using actual content."""
         reasons = self._extract_reasons(context)
 
         if reasons and len(reasons) >= 2:
             answer = f"{topic} is important because {reasons[0]}. Furthermore, {reasons[1]}."
+        elif context and len(context) > 50:
+            # Extract reasoning from context
+            reasoning = self._get_first_sentences(context, 2)
+            answer = f"{topic} matters because {reasoning.lower() if reasoning else 'it addresses key needs'}."
         else:
             answer = (
-                f"{topic} matters because it addresses common challenges that users face daily. "
-                f"It provides practical solutions that save time and improve outcomes. "
-                f"Organizations that adopt it often see measurable improvements in their processes."
+                f"{topic} is important for several reasons related to its core purpose. "
+                f"Understanding why {topic} matters helps in proper implementation. "
+                f"The significance becomes clear when examining its practical applications."
             )
 
         return answer
 
     def _generate_timing_answer(self, topic: str, context: str) -> str:
-        """Generate a timing-focused answer."""
+        """Generate a timing-focused answer using actual content."""
+        if context and len(context) > 50:
+            timing_info = self._get_first_sentences(context, 2)
+            return (
+                f"The appropriate time to consider {topic} depends on specific circumstances. "
+                f"{timing_info} Understanding when to apply {topic} principles ensures better results."
+            )
         return (
-            f"The best time to use {topic} is when you need reliable results quickly. "
-            f"It proves most effective during planning phases or when facing specific challenges. "
-            f"Consider implementing it early in your process to maximize benefits throughout."
+            f"The timing for {topic} depends on the specific situation and requirements. "
+            f"Generally, {topic} should be considered when the relevant conditions are met. "
+            f"Planning ahead and understanding the prerequisites helps determine the right timing."
         )
 
     def _generate_audience_answer(self, topic: str, context: str) -> str:
-        """Generate an audience-focused answer."""
+        """Generate an audience-focused answer using actual content."""
+        if context and len(context) > 50:
+            audience_info = self._get_first_sentences(context, 2)
+            return (
+                f"People interested in {topic} typically include individuals seeking specific outcomes. "
+                f"{audience_info} Anyone affected by the topic can benefit from understanding it better."
+            )
         return (
-            f"Anyone seeking practical solutions can benefit from {topic}. "
-            f"It serves professionals, teams, and organizations across various industries. "
-            f"Both beginners and experienced users find value in its features and capabilities."
+            f"People who can benefit from understanding {topic} include individuals directly involved in related activities. "
+            f"Information about {topic} is valuable for anyone making decisions in this area. "
+            f"Both newcomers and experienced individuals can gain insights from learning about {topic}."
         )
 
     def _generate_generic_answer(
         self, topic: str, question: str, context: str
     ) -> str:
-        """Generate a generic answer when pattern doesn't match."""
+        """Generate an answer based on actual content when pattern doesn't match."""
+        if context and len(context) > 50:
+            content_summary = self._get_first_sentences(context, 3)
+            return (
+                f"Regarding {topic}: {content_summary} "
+                f"This information helps address key aspects of the topic."
+            )
         return (
-            f"When it comes to {topic}, understanding the key aspects helps users make informed decisions. "
-            f"The approach involves considering multiple factors that affect outcomes. "
-            f"Users should evaluate their specific needs to determine the best path forward."
+            f"Understanding {topic} involves examining its various components and implications. "
+            f"The topic encompasses several important aspects worth considering. "
+            f"Further exploration of {topic} reveals its relevance to the broader context."
         )
+
+    def _get_first_sentences(self, text: str, count: int = 2) -> str:
+        """Extract first N sentences from text."""
+        if not text:
+            return ""
+
+        # Split into sentences
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+
+        # Take first N sentences
+        selected = sentences[:count]
+
+        # Join and clean
+        result = " ".join(selected)
+
+        # Ensure it ends properly
+        result = result.strip()
+        if result and not result.endswith((".", "!", "?")):
+            result += "."
+
+        return result
 
     def _extract_key_info(self, text: str, max_phrases: int = 3) -> list[str]:
         """Extract key phrases from text."""
@@ -632,10 +736,21 @@ class FAQGenerator:
         word_count = len(words)
 
         if word_count < MIN_ANSWER_WORDS:
-            # Too short - need to expand
-            # Add a closing sentence
+            # Too short - need to expand with meaningful additions
             answer = answer.rstrip(".")
-            answer += ". This approach helps ensure consistent results across different use cases."
+
+            # Add expansion sentences until we meet minimum
+            expansion_sentences = [
+                "This approach helps ensure consistent results across different use cases.",
+                "Understanding these aspects provides a solid foundation for making informed decisions.",
+                "Proper implementation leads to better outcomes and more effective results.",
+            ]
+
+            expansion_idx = 0
+            while word_count < MIN_ANSWER_WORDS and expansion_idx < len(expansion_sentences):
+                answer += ". " + expansion_sentences[expansion_idx]
+                word_count = len(answer.split())
+                expansion_idx += 1
 
         elif word_count > MAX_ANSWER_WORDS:
             # Too long - truncate at sentence boundary
