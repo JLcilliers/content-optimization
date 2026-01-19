@@ -155,6 +155,8 @@ class KeywordInjector:
                         reason="Added primary keyword to first 100 words",
                         impact_score=4.0,
                         section_id=node.node_id,
+                        full_original=original,
+                        full_optimized=modified,
                     )
                 break
 
@@ -300,6 +302,8 @@ class KeywordInjector:
                         reason=f"Added secondary keyword '{keyword}'",
                         impact_score=1.5,
                         section_id=node.node_id,
+                        full_original=original,
+                        full_optimized=modified,
                     )
                 )
                 injected.add(keyword)
@@ -362,6 +366,8 @@ class KeywordInjector:
                             reason="Distributed primary keyword for optimal density",
                             impact_score=1.0,
                             section_id=node.node_id,
+                            full_original=original,
+                            full_optimized=modified,
                         )
                     )
                     words_since_last = 0

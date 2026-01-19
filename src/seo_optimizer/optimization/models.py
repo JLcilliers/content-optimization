@@ -126,14 +126,19 @@ class OptimizationChange:
 
     change_type: ChangeType
     location: str  # Where the change was made (e.g., "Heading 2: Introduction")
-    original: str  # Original content
-    optimized: str  # New content
+    original: str  # Original content (truncated for display)
+    optimized: str  # New content (truncated for display)
     reason: str  # Why this change was made
     impact_score: float = 0.0  # Expected GEO score improvement (0-10)
 
     # Metadata
     section_id: str | None = None
     position: int | None = None  # Character position in document
+
+    # Full text fields for accurate string matching in pipeline
+    # These contain complete text while original/optimized are truncated for display
+    full_original: str = ""  # Complete original text for matching
+    full_optimized: str = ""  # Complete optimized text for replacement
 
     def __str__(self) -> str:
         """Human-readable representation."""

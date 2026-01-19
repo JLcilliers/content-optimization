@@ -203,6 +203,8 @@ class EntityEnricher:
                 reason=f"Added semantic entity '{entity}'",
                 impact_score=2.5,
                 section_id=node.node_id,
+                full_original=original,
+                full_optimized=modified,
             )
 
         return None
@@ -285,6 +287,8 @@ class EntityEnricher:
                                     reason=f"Added context for entity '{entity}'",
                                     impact_score=1.5,
                                     section_id=node.node_id,
+                                    full_original=original,
+                                    full_optimized=modified,
                                 )
                             )
                             break

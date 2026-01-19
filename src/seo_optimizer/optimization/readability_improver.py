@@ -184,6 +184,8 @@ class ReadabilityImprover:
                     reason="Split complex sentences for better readability",
                     impact_score=2.0,
                     section_id=node.node_id,
+                    full_original=text,
+                    full_optimized=modified_text,
                 )
             )
 
@@ -311,6 +313,8 @@ class ReadabilityImprover:
                     reason="Converted passive voice to active voice",
                     impact_score=1.5,
                     section_id=node.node_id,
+                    full_original=text,
+                    full_optimized=modified_text,
                 )
             )
 
@@ -404,6 +408,8 @@ class ReadabilityImprover:
                     reason=f"Simplified vocabulary: {', '.join(f'{c}→{s}' for c, s in replacements_made[:3])}",
                     impact_score=1.0,
                     section_id=node.node_id,
+                    full_original=text,
+                    full_optimized=modified_text,
                 )
             )
 

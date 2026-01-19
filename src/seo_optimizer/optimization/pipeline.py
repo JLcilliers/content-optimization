@@ -394,12 +394,15 @@ class OptimizationPipeline:
             node_changes = changes_by_section.get(node.node_id, [])
 
             for change in node_changes:
-                if change.original and change.optimized:
-                    # Simple text replacement
-                    # In production, would use more sophisticated matching
-                    if change.original in node.text_content:
+                # Use full text fields for accurate matching (fall back to truncated if not set)
+                original_text = change.full_original or change.original
+                optimized_text = change.full_optimized or change.optimized
+
+                if original_text and optimized_text:
+                    # Text replacement using full content for accurate matching
+                    if original_text in node.text_content:
                         node.text_content = node.text_content.replace(
-                            change.original, change.optimized, 1
+                            original_text, optimized_text, 1
                         )
 
         # Add FAQ section if generated
@@ -511,11 +514,15 @@ class OptimizationPipeline:
 
         # Track text modifications from changes
         for change in result.changes:
-            if change.original and change.optimized and change.original != change.optimized:
+            # Use full text fields for accurate highlighting (fall back to truncated if not set)
+            original_text = change.full_original or change.original
+            optimized_text = change.full_optimized or change.optimized
+
+            if original_text and optimized_text and original_text != optimized_text:
                 change_map["text_insertions"].append({
                     "section_id": change.section_id,
-                    "original": change.original,
-                    "new": change.optimized,
+                    "original": original_text,
+                    "new": optimized_text,
                     "type": change.change_type.value,
                 })
 

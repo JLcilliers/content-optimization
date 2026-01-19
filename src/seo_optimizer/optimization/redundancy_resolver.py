@@ -403,6 +403,8 @@ class RedundancyResolver:
                         optimized="[Consider removing duplicate]",
                         reason=f"Duplicate content detected ({match.similarity:.0%} similar)",
                         impact_score=2.0,
+                        full_original=match.second_text,
+                        full_optimized="",  # Removal suggestion, no replacement text
                     )
                 )
             else:
@@ -418,6 +420,8 @@ class RedundancyResolver:
                             optimized=reworded[:80] + "...",
                             reason=f"Reworded to reduce similarity ({match.similarity:.0%} similar)",
                             impact_score=1.5,
+                            full_original=match.second_text,
+                            full_optimized=reworded,
                         )
                     )
 
