@@ -456,6 +456,75 @@ class KeywordInjector:
 
         return None
 
+    def _extract_topic_from_keyword(self, keyword: str) -> str:
+        """
+        Extract the core topic from a keyword phrase for natural insertion.
+
+        Removes common verb prefixes to get a natural-sounding topic.
+
+        Examples:
+            "Running a booster club" → "booster clubs"
+            "How to start a business" → "businesses"
+            "Starting your own podcast" → "podcasts"
+
+        Args:
+            keyword: The keyword phrase
+
+        Returns:
+            The core topic suitable for natural sentence insertion
+        """
+        if not keyword:
+            return keyword
+
+        topic = keyword.strip()
+
+        # Common verb prefixes to strip (order matters - longer phrases first)
+        verb_prefixes = [
+            "how to start a", "how to start an", "how to start",
+            "how to create a", "how to create an", "how to create",
+            "how to run a", "how to run an", "how to run",
+            "how to manage a", "how to manage an", "how to manage",
+            "how to build a", "how to build an", "how to build",
+            "running a", "running an", "running your",
+            "starting a", "starting an", "starting your",
+            "creating a", "creating an", "creating your",
+            "managing a", "managing an", "managing your",
+            "building a", "building an", "building your",
+            "what is a", "what is an", "what is",
+            "what are", "why is", "why are",
+            "when to", "where to", "who can",
+        ]
+
+        topic_lower = topic.lower()
+        for prefix in verb_prefixes:
+            if topic_lower.startswith(prefix):
+                topic = topic[len(prefix):].strip()
+                break
+
+        # Handle "your own X" pattern
+        if topic.lower().startswith("your own "):
+            topic = topic[9:].strip()
+        elif topic.lower().startswith("your "):
+            topic = topic[5:].strip()
+        elif topic.lower().startswith("own "):
+            topic = topic[4:].strip()
+
+        # Ensure we have something left
+        if not topic or len(topic) < 3:
+            return keyword  # Return original if extraction failed
+
+        # Return plural form for more natural sentence flow
+        # Simple pluralization
+        if not topic.endswith("s"):
+            if topic.endswith(("s", "x", "z", "ch", "sh")):
+                topic = topic + "es"
+            elif topic.endswith("y") and len(topic) > 1 and topic[-2] not in "aeiou":
+                topic = topic[:-1] + "ies"
+            else:
+                topic = topic + "s"
+
+        return topic
+
     def _enhance_sentence_with_keyword(
         self, sentence: str, keyword: str
     ) -> str | None:
@@ -466,9 +535,15 @@ class KeywordInjector:
         1. Add as clarifying phrase
         2. Replace generic term with keyword
         3. Add as example or specification
+
+        IMPORTANT: Extracts the topic from the keyword for natural phrasing.
+        Example: "Running a booster club" → inserts "booster clubs" not the raw keyword.
         """
+        # Extract the core topic for natural insertion
+        topic = self._extract_topic_from_keyword(keyword)
+
         # Strategy 1: Add as clarifying phrase
-        # "This technology" → "This technology, particularly {keyword},"
+        # "This technology" → "This technology, particularly {topic},"
         generic_terms = [
             "this technology",
             "this approach",
@@ -484,7 +559,7 @@ class KeywordInjector:
         for term in generic_terms:
             if term in sentence_lower:
                 pattern = re.compile(re.escape(term), re.IGNORECASE)
-                replacement = f"{term} (such as {keyword})"
+                replacement = f"{term} (such as {topic})"
                 return pattern.sub(replacement, sentence, count=1)
 
         # Strategy 2: Add as introductory context
@@ -493,7 +568,7 @@ class KeywordInjector:
         first_word = sentence.split()[0].lower() if sentence.split() else ""
 
         if first_word in topic_indicators:
-            return f"When using {keyword}, {sentence[0].lower()}{sentence[1:]}"
+            return f"When working with {topic}, {sentence[0].lower()}{sentence[1:]}"
 
         # Strategy 3: Add as specification at end
         # Note: When called from _insert_keyword_naturally, sentences are split
@@ -502,7 +577,7 @@ class KeywordInjector:
         if len(sentence) < 100 and not sentence.rstrip().endswith((",", ":", ";")):
             # Add as trailing context (no period - will be added by rejoin)
             clean_sentence = sentence.rstrip(".")
-            return f"{clean_sentence}, especially for {keyword}"
+            return f"{clean_sentence}, especially for {topic}"
 
         return None
 

@@ -303,7 +303,8 @@ class FAQGenerator:
         # Check for metadata labels
         metadata_labels = [
             "url:", "meta title:", "meta description:",
-            "page content", "seo information", "document information"
+            "page content", "seo information", "document information",
+            "extracted at:", "source:", "document:"
         ]
         for label in metadata_labels:
             if text_lower.startswith(label):
@@ -316,6 +317,45 @@ class FAQGenerator:
             if url_match:
                 url_len = len(url_match.group())
                 if url_len > len(text) * 0.5:  # URL is >50% of content
+                    return True
+
+        return False
+
+    def _is_heading_content(self, text: str, original_text: str | None = None) -> bool:
+        """
+        Check if text appears to be a heading rather than body content.
+
+        Headings are typically short, lack ending punctuation, and may
+        have originally contained [H*] markers.
+
+        Args:
+            text: The cleaned text to check
+            original_text: The original text before stripping markers (optional)
+
+        Returns:
+            True if the text appears to be a heading
+        """
+        # Check if original text had heading markers
+        if original_text and HEADING_MARKER_PATTERN.match(original_text):
+            return True
+
+        text = text.strip()
+
+        # Short text without sentence-ending punctuation is likely a heading
+        if len(text) < 100 and not text.endswith((".", "!", "?")):
+            # Additional check: headings often have title-like patterns
+            # e.g., "Everything You Need to Know About X"
+            title_patterns = [
+                r"everything you need to know",
+                r"guide to",
+                r"introduction to",
+                r"overview of",
+                r"what you need to know",
+                r"complete guide",
+                r"ultimate guide",
+            ]
+            for pattern in title_patterns:
+                if re.search(pattern, text.lower()):
                     return True
 
         return False
@@ -335,9 +375,119 @@ class FAQGenerator:
         """
         return HEADING_MARKER_PATTERN.sub("", text).strip()
 
+    def _extract_topic_from_keyword(self, keyword: str) -> str:
+        """
+        Extract the core topic from a keyword phrase.
+
+        Removes common verb prefixes to get a natural-sounding topic for FAQ questions.
+
+        Examples:
+            "Running a booster club" → "booster club"
+            "How to start a business" → "business"
+            "Starting your own podcast" → "podcast"
+            "Creating effective content" → "effective content"
+
+        Args:
+            keyword: The keyword phrase (e.g., primary_keyword from config)
+
+        Returns:
+            The core topic (noun phrase) suitable for FAQ questions
+        """
+        if not keyword:
+            return ""
+
+        topic = keyword.strip()
+
+        # Common verb prefixes to strip (order matters - longer phrases first)
+        verb_prefixes = [
+            "how to start a", "how to start an", "how to start",
+            "how to create a", "how to create an", "how to create",
+            "how to run a", "how to run an", "how to run",
+            "how to manage a", "how to manage an", "how to manage",
+            "how to build a", "how to build an", "how to build",
+            "running a", "running an", "running your",
+            "starting a", "starting an", "starting your",
+            "creating a", "creating an", "creating your",
+            "managing a", "managing an", "managing your",
+            "building a", "building an", "building your",
+            "what is a", "what is an", "what is",
+            "what are", "why is", "why are",
+            "when to", "where to", "who can",
+        ]
+
+        topic_lower = topic.lower()
+        for prefix in verb_prefixes:
+            if topic_lower.startswith(prefix):
+                # Remove prefix and clean up
+                topic = topic[len(prefix):].strip()
+                break
+
+        # Handle "your own X" pattern
+        if topic.lower().startswith("your own "):
+            topic = topic[9:].strip()
+        elif topic.lower().startswith("your "):
+            topic = topic[5:].strip()
+        elif topic.lower().startswith("own "):
+            topic = topic[4:].strip()
+
+        # Ensure we have something left
+        if not topic or len(topic) < 3:
+            return keyword  # Return original if extraction failed
+
+        return topic
+
+    def _get_topic_with_article(self, topic: str, plural: bool = False) -> str:
+        """
+        Get the topic with an appropriate article ("a" or "an") for natural phrasing.
+
+        Examples:
+            "booster club" → "a booster club"
+            "organization" → "an organization"
+            "booster club" (plural=True) → "booster clubs"
+
+        Args:
+            topic: The topic noun phrase
+            plural: If True, return plural form without article
+
+        Returns:
+            Topic with appropriate article or plural form
+        """
+        if not topic:
+            return topic
+
+        topic = topic.strip()
+
+        if plural:
+            # Simple pluralization (handles common cases)
+            if topic.endswith(("s", "x", "z", "ch", "sh")):
+                return topic + "es"
+            elif topic.endswith("y") and len(topic) > 1 and topic[-2] not in "aeiou":
+                return topic[:-1] + "ies"
+            else:
+                return topic + "s"
+
+        # Check if topic already has an article
+        topic_lower = topic.lower()
+        if topic_lower.startswith(("a ", "an ", "the ")):
+            return topic
+
+        # Determine article based on first letter sound
+        first_char = topic_lower[0] if topic_lower else ""
+        vowels = "aeiou"
+
+        # Special cases for vowel sounds
+        if first_char in vowels:
+            return f"an {topic}"
+        else:
+            return f"a {topic}"
+
     def _generate_questions(self, topic_info: dict) -> list[str]:
         """
         Generate relevant questions for the topic.
+
+        Uses the extracted topic (not raw keyword) for natural-sounding questions.
+        Example: "Running a booster club" → "What is a booster club?"
+                 NOT "What is Running a booster club?"
 
         Args:
             topic_info: Extracted topic information
@@ -346,20 +496,29 @@ class FAQGenerator:
             List of question strings
         """
         questions: list[str] = []
-        topic = topic_info.get("primary_topic", "")
+        raw_keyword = topic_info.get("primary_topic", "")
 
-        if not topic:
+        if not raw_keyword:
             return questions
 
-        # Generate questions from patterns
-        question_types = ["what", "how", "why", "when", "who"]
+        # Extract the core topic from the keyword for natural-sounding questions
+        topic = self._extract_topic_from_keyword(raw_keyword)
 
-        for q_type in question_types:
-            patterns = QUESTION_PATTERNS.get(q_type, [])
-            if patterns:
-                # Use first pattern for each type
-                question = patterns[0].format(topic=topic)
-                questions.append(question)
+        # Get topic variants for different question types
+        topic_with_article = self._get_topic_with_article(topic)  # "a booster club"
+        topic_plural = self._get_topic_with_article(topic, plural=True)  # "booster clubs"
+
+        # Generate questions with proper grammar
+        # Use article version for singular definitions, plural for general benefits
+        natural_questions = [
+            f"What is {topic_with_article}?",  # "What is a booster club?"
+            f"How does {topic_with_article} work?",  # "How does a booster club work?"
+            f"Why are {topic_plural} important?",  # "Why are booster clubs important?"
+            f"When should you consider {topic_with_article}?",  # "When should you consider a booster club?"
+            f"Who can benefit from {topic_plural}?",  # "Who can benefit from booster clubs?"
+        ]
+
+        questions.extend(natural_questions)
 
         # Add topic-specific questions from key points
         for point in topic_info.get("key_points", [])[:3]:
@@ -370,7 +529,7 @@ class FAQGenerator:
 
         # Add entity-based questions
         for entity in topic_info.get("entities", [])[:2]:
-            question = f"How does {entity} relate to {topic}?"
+            question = f"How does {entity} relate to {topic_plural}?"
             if question not in questions:
                 questions.append(question)
 
@@ -434,9 +593,13 @@ class FAQGenerator:
         Returns:
             Answer string or None
         """
-        topic = topic_info.get("primary_topic", "")
-        if not topic:
+        raw_keyword = topic_info.get("primary_topic", "")
+        if not raw_keyword:
             return None
+
+        # Extract the core topic for natural-sounding answers
+        # "Running a booster club" → "booster club" (or "a booster club")
+        topic = self._extract_topic_from_keyword(raw_keyword)
 
         # Extract relevant content for the answer (passing topic_info for section mapping)
         relevant_content = self._find_relevant_content(question, ast, topic_info)
@@ -472,6 +635,7 @@ class FAQGenerator:
         Find content relevant to answering the question.
 
         Uses section content map for better matching, falls back to paragraph search.
+        Filters out heading content and metadata to ensure only body text is used.
 
         Args:
             question: The question
@@ -479,7 +643,7 @@ class FAQGenerator:
             topic_info: Optional topic info with section content map
 
         Returns:
-            Relevant content string
+            Relevant content string (body paragraphs only, no headings)
         """
         # Extract key terms from question
         question_words = set(
@@ -496,12 +660,20 @@ class FAQGenerator:
                 # Check if heading matches question keywords
                 heading_score = sum(1 for word in question_words if word in heading_lower)
                 if heading_score > 0 and paragraphs:
-                    return " ".join(paragraphs[:2])
+                    # Filter out any heading-like content from paragraphs
+                    valid_paragraphs = [
+                        p for p in paragraphs
+                        if not self._is_heading_content(p) and len(p) > 50
+                    ]
+                    if valid_paragraphs:
+                        return " ".join(valid_paragraphs[:2])
 
             # Also check content_summary as fallback
             content_summary = topic_info.get("content_summary", "")
             if content_summary and len(content_summary) > 50:
-                return content_summary
+                # Ensure content_summary doesn't contain heading-like text
+                if not self._is_heading_content(content_summary):
+                    return content_summary
 
         relevant_paragraphs: list[tuple[int, str]] = []
 
@@ -513,13 +685,23 @@ class FAQGenerator:
             if should_skip_node(node):
                 continue
 
+            original_text = node.text_content
+
             # Strip [H*] markers from content
-            text = self._strip_heading_markers(node.text_content)
-            if not text or len(text) < 30:
+            text = self._strip_heading_markers(original_text)
+            if not text or len(text) < 50:  # Increased minimum length
                 continue
 
-            # Additional check for metadata content
+            # Skip metadata content
             if self._is_metadata_paragraph(text):
+                continue
+
+            # Skip heading-like content (including text that had [H*] markers)
+            if self._is_heading_content(text, original_text):
+                continue
+
+            # Require proper sentence structure (ends with punctuation)
+            if not text.rstrip().endswith((".", "!", "?")):
                 continue
 
             text_lower = text.lower()
@@ -537,12 +719,17 @@ class FAQGenerator:
             # Content already has markers stripped
             return " ".join([p[1] for p in relevant_paragraphs[:2]])
 
-        # Final fallback: use any substantial CONTENT paragraph (not metadata)
+        # Final fallback: use any substantial CONTENT paragraph (not metadata/heading)
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH and len(node.text_content) > 50:
-                if not should_skip_node(node) and not self._is_metadata_paragraph(node.text_content):
-                    # Strip markers from fallback content too
-                    return self._strip_heading_markers(node.text_content)
+                original_text = node.text_content
+                text = self._strip_heading_markers(original_text)
+
+                if (not should_skip_node(node)
+                    and not self._is_metadata_paragraph(text)
+                    and not self._is_heading_content(text, original_text)
+                    and text.rstrip().endswith((".", "!", "?"))):
+                    return text
 
         return ""
 
@@ -696,25 +883,51 @@ class FAQGenerator:
         )
 
     def _get_first_sentences(self, text: str, count: int = 2) -> str:
-        """Extract first N sentences from text."""
+        """
+        Extract first N COMPLETE sentences from text.
+
+        Only returns sentences that:
+        - End with proper punctuation (., !, ?)
+        - Are at least 20 characters long
+        - Don't appear to be headings or fragments
+
+        Args:
+            text: Source text to extract from
+            count: Number of sentences to extract
+
+        Returns:
+            String containing the complete sentences
+        """
         if not text:
             return ""
 
         # Split into sentences
         sentences = re.split(r"(?<=[.!?])\s+", text.strip())
 
-        # Take first N sentences
-        selected = sentences[:count]
+        # Filter to only complete sentences
+        complete_sentences = []
+        for sentence in sentences:
+            sentence = sentence.strip()
+            # Must end with proper punctuation
+            if not sentence.endswith((".", "!", "?")):
+                continue
+            # Must be substantial (not just a fragment)
+            if len(sentence) < 20:
+                continue
+            # Skip if it looks like a heading/title
+            if self._is_heading_content(sentence):
+                continue
+            complete_sentences.append(sentence)
+
+        # Take first N complete sentences
+        selected = complete_sentences[:count]
+
+        if not selected:
+            return ""
 
         # Join and clean
         result = " ".join(selected)
-
-        # Ensure it ends properly
-        result = result.strip()
-        if result and not result.endswith((".", "!", "?")):
-            result += "."
-
-        return result
+        return result.strip()
 
     def _extract_key_info(self, text: str, max_phrases: int = 3) -> list[str]:
         """Extract key phrases from text."""

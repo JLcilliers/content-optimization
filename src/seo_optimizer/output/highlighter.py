@@ -87,11 +87,16 @@ def _apply_highlight_to_run(
     """
     Apply highlight color to a run.
 
+    IMPORTANT: Only applies highlight if the run contains non-empty text.
+    This prevents empty highlight runs that produce "[]{.mark}" in output.
+
     Args:
         run: Run to highlight
         color: WD_COLOR_INDEX value (default: YELLOW)
     """
-    run.font.highlight_color = color
+    # Guard: Only highlight runs with actual content
+    if run.text and run.text.strip():
+        run.font.highlight_color = color
 
 
 def apply_change_formatting(run: Run, change_type: ChangeType) -> None:
@@ -107,11 +112,16 @@ def apply_change_formatting(run: Run, change_type: ChangeType) -> None:
         run: Run to format
         change_type: Type of change
     """
+    # Guard: Don't apply highlight to empty runs
+    has_content = run.text and run.text.strip()
+
     if change_type == ChangeType.INSERTED:
-        run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+        if has_content:
+            run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
     elif change_type == ChangeType.MODIFIED:
-        run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+        if has_content:
+            run.font.highlight_color = WD_COLOR_INDEX.YELLOW
 
     elif change_type == ChangeType.DELETED:
         run.font.strike = True

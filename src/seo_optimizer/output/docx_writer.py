@@ -1348,7 +1348,8 @@ class PreservingDocxWriter:
         # Find what was inserted (the difference)
         inserted_text = self._find_insertion_diff(original_text, new_text)
 
-        if not inserted_text:
+        # Skip if no insertion or empty/whitespace-only insertion
+        if not inserted_text or not inserted_text.strip():
             return
 
         # Find where the insertion is in the new text
@@ -1394,39 +1395,127 @@ class PreservingDocxWriter:
         """
         Find the text that was inserted (difference between original and new).
 
+        IMPORTANT: Expands insertions to word boundaries to avoid breaking words
+        like "g[reatly]" or "comp[let]e". If an insertion starts or ends mid-word,
+        we expand it to include the complete words.
+
         Args:
             original: Original text
             new: New text (should be longer or contain insertion)
 
         Returns:
-            The inserted text
+            The inserted text (expanded to word boundaries)
         """
-        # Use difflib to find the actual insertion
         import difflib
-
-        # Simple approach: find the longest common substring approach
-        # The insertion is what's in new but not in original
 
         # Find where original starts in new
         if original in new:
             # Original is a substring - insertion is elsewhere
-            # This shouldn't happen in our case
             return ""
 
         # Use SequenceMatcher to find the difference
         matcher = difflib.SequenceMatcher(None, original, new)
         opcodes = matcher.get_opcodes()
 
-        inserted_parts = []
+        # Collect all insertion regions (with positions)
+        insertion_regions = []
         for tag, i1, i2, j1, j2 in opcodes:
-            if tag == "insert":
+            if tag == "insert" or tag == "replace":
                 # Text that exists in new but not in original
-                inserted_parts.append(new[j1:j2])
-            elif tag == "replace":
-                # Replacement - the new part is inserted, old part removed
-                inserted_parts.append(new[j1:j2])
+                insertion_regions.append((j1, j2))
+
+        if not insertion_regions:
+            return ""
+
+        # Merge adjacent/overlapping regions and expand to word boundaries
+        merged_regions = []
+        for start, end in insertion_regions:
+            # Expand to word boundaries
+            expanded_start = self._find_word_start(new, start)
+            expanded_end = self._find_word_end(new, end)
+
+            if merged_regions and expanded_start <= merged_regions[-1][1]:
+                # Merge with previous region
+                merged_regions[-1] = (merged_regions[-1][0], max(merged_regions[-1][1], expanded_end))
+            else:
+                merged_regions.append((expanded_start, expanded_end))
+
+        # Extract the final inserted text from merged regions
+        inserted_parts = []
+        for start, end in merged_regions:
+            inserted_text = new[start:end]
+            if inserted_text.strip():  # Only include non-empty insertions
+                inserted_parts.append(inserted_text)
 
         return "".join(inserted_parts)
+
+    def _find_word_start(self, text: str, pos: int) -> int:
+        """
+        Find the start of the word containing the given position.
+
+        Args:
+            text: The full text
+            pos: Position within text
+
+        Returns:
+            Position of the start of the word
+        """
+        # Move backwards to find word start
+        while pos > 0 and text[pos - 1].isalnum():
+            pos -= 1
+        return pos
+
+    def _find_word_end(self, text: str, pos: int) -> int:
+        """
+        Find the end of the word containing the given position.
+
+        Args:
+            text: The full text
+            pos: Position within text
+
+        Returns:
+            Position just after the end of the word
+        """
+        # Move forwards to find word end
+        while pos < len(text) and text[pos].isalnum():
+            pos += 1
+        return pos
+
+    def _is_word_boundary_aligned(self, text: str, start: int, end: int) -> bool:
+        """
+        Check if the given range aligns with word boundaries.
+
+        A word boundary is:
+        - Start/end of string
+        - Space, punctuation, or non-alphanumeric character
+
+        Args:
+            text: The full text
+            start: Start index of the range
+            end: End index of the range
+
+        Returns:
+            True if both start and end are at word boundaries
+        """
+        # Check start boundary
+        if start > 0:
+            char_before = text[start - 1]
+            char_at_start = text[start] if start < len(text) else ""
+            # If char before is alphanumeric and char at start is alphanumeric,
+            # we're in the middle of a word
+            if char_before.isalnum() and char_at_start.isalnum():
+                return False
+
+        # Check end boundary
+        if end < len(text):
+            char_before_end = text[end - 1] if end > 0 else ""
+            char_at_end = text[end]
+            # If char before end is alphanumeric and char at end is alphanumeric,
+            # we're in the middle of a word
+            if char_before_end.isalnum() and char_at_end.isalnum():
+                return False
+
+        return True
 
     def _apply_formatting(self, run, formatting: dict) -> None:
         """Apply formatting to a run."""
@@ -1471,20 +1560,33 @@ class PreservingDocxWriter:
         header_run.font.size = Pt(16)
         header_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
 
-        # Add FAQ items
-        current_question = None
+        # Add FAQ items (skip the header node since we added it manually above)
         for node in faq_nodes:
+            node_id = node.get("node_id", "")
             content = node.get("content", "")
             node_type = node.get("type", "")
+
+            # Skip the FAQ section heading - we already added it above
+            # Check both by node_id AND by content to avoid duplicates
+            if node_id == "faq_heading":
+                continue
+            if "frequently asked questions" in content.lower():
+                continue
+
+            # Skip empty content
+            if not content or not content.strip():
+                continue
 
             if node_type == "heading":
                 # This is a question
                 q_para = doc.add_paragraph()
                 q_run = q_para.add_run(content)
                 q_run.bold = True
-                q_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+                if content.strip():  # Guard against empty highlights
+                    q_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
             else:
                 # This is an answer
                 a_para = doc.add_paragraph()
                 a_run = a_para.add_run(content)
-                a_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
+                if content.strip():  # Guard against empty highlights
+                    a_run.font.highlight_color = WD_COLOR_INDEX.BRIGHT_GREEN
