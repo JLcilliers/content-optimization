@@ -531,54 +531,53 @@ class KeywordInjector:
         """
         Enhance a sentence by naturally incorporating keyword.
 
-        Uses several strategies:
-        1. Add as clarifying phrase
-        2. Replace generic term with keyword
-        3. Add as example or specification
+        CONSERVATIVE APPROACH: Only insert keywords where they grammatically fit.
+        Returns None if no natural insertion point exists.
 
-        IMPORTANT: Extracts the topic from the keyword for natural phrasing.
-        Example: "Running a booster club" → inserts "booster clubs" not the raw keyword.
+        Strategies (in order of preference):
+        1. Replace generic demonstrative terms with specific keyword
+        2. Expand plural nouns with "such as {keyword}" (only after plural nouns)
+
+        IMPORTANT: Does NOT use patterns like ", especially for X" which create
+        grammatically incorrect sentences.
         """
-        # Extract the core topic for natural insertion
-        topic = self._extract_topic_from_keyword(keyword)
-
-        # Strategy 1: Add as clarifying phrase
-        # "This technology" → "This technology, particularly {topic},"
-        generic_terms = [
-            "this technology",
-            "this approach",
-            "this method",
-            "these tools",
-            "this process",
-            "these techniques",
-            "the solution",
-            "this strategy",
-        ]
+        # Don't insert if keyword already present
+        if keyword.lower() in sentence.lower():
+            return None
 
         sentence_lower = sentence.lower()
-        for term in generic_terms:
-            if term in sentence_lower:
-                pattern = re.compile(re.escape(term), re.IGNORECASE)
-                replacement = f"{term} (such as {topic})"
-                return pattern.sub(replacement, sentence, count=1)
 
-        # Strategy 2: Add as introductory context
-        # If sentence is about the topic, add keyword as context
-        topic_indicators = ["when", "if you", "to", "for", "with"]
-        first_word = sentence.split()[0].lower() if sentence.split() else ""
+        # Strategy 1: Replace demonstrative terms that refer to the topic
+        # Only works when there's a clear reference to replace
+        demonstrative_replacements = [
+            ("these organizations", keyword),
+            ("such organizations", keyword),
+            ("these groups", keyword),
+            ("such groups", keyword),
+            ("this type of organization", f"a {keyword}"),
+            ("this kind of organization", f"a {keyword}"),
+        ]
 
-        if first_word in topic_indicators:
-            return f"When working with {topic}, {sentence[0].lower()}{sentence[1:]}"
+        for pattern, replacement in demonstrative_replacements:
+            if pattern in sentence_lower:
+                regex = re.compile(re.escape(pattern), re.IGNORECASE)
+                return regex.sub(replacement, sentence, count=1)
 
-        # Strategy 3: Add as specification at end
-        # Note: When called from _insert_keyword_naturally, sentences are split
-        # with punctuation captured separately, so we should NOT add a period here.
-        # The original punctuation will be re-added during the join.
-        if len(sentence) < 100 and not sentence.rstrip().endswith((",", ":", ";")):
-            # Add as trailing context (no period - will be added by rejoin)
-            clean_sentence = sentence.rstrip(".")
-            return f"{clean_sentence}, especially for {topic}"
+        # Strategy 2: Expand list items with keyword as example
+        # Pattern: "organizations, clubs, and teams" → add keyword to list
+        # Only if the list context matches the keyword topic
+        list_patterns = [
+            (r"\b(organizations|groups|clubs|teams)\b(?=\s*(?:,|and|or))", keyword),
+        ]
 
+        for pattern, replacement in list_patterns:
+            match = re.search(pattern, sentence, re.IGNORECASE)
+            if match:
+                # Insert keyword into the list
+                insert_pos = match.end()
+                return f"{sentence[:insert_pos]}, {replacement},{sentence[insert_pos:]}"
+
+        # No natural insertion point found - return None rather than forcing bad grammar
         return None
 
     def _add_keyword_to_heading(self, heading: str, keyword: str) -> str | None:

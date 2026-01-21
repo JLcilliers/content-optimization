@@ -210,6 +210,27 @@ def validate_insertion(original: str, modified: str) -> tuple[bool, str]:
     if re.search(r",\s+,", modified):
         return False, "Double comma with space detected"
 
+    # CRITICAL: Reject known bad insertion patterns
+    bad_patterns = [
+        r",\s*especially\s+for\s+",  # ", especially for X" is grammatically wrong
+        r",\s*particularly\s+for\s+",  # ", particularly for X"
+        r",\s*specifically\s+for\s+",  # ", specifically for X"
+        r"When working with [^,]+,\s+[a-z]",  # Awkward "When working with X, sentence"
+    ]
+
+    for pattern in bad_patterns:
+        if re.search(pattern, modified) and not re.search(pattern, original):
+            return False, f"Bad insertion pattern detected: {pattern}"
+
+    # Check for redundant keyword insertion (same phrase appearing twice)
+    words = modified.lower().split()
+    for i in range(len(words) - 2):
+        phrase = " ".join(words[i:i+3])
+        # Check if this 3-word phrase appears elsewhere
+        remaining = " ".join(words[:i] + words[i+3:])
+        if phrase in remaining:
+            return False, "Redundant phrase detected (potential keyword stuffing)"
+
     # Validate sentences don't start with lowercase after period
     sentences = re.split(r"(?<=[.!?])\s+", modified)
     for i, sentence in enumerate(sentences[1:], 1):  # Skip first

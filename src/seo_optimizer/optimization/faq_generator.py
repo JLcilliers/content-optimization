@@ -216,6 +216,7 @@ class FAQGenerator:
             "primary_section": "",
             "content_summary": "",  # Full text for context
             "section_content": {},  # Map of H2 -> following paragraphs
+            "h1_title": "",  # Track H1 title to exclude from FAQ answers
         }
 
         # Use primary keyword if available
@@ -226,16 +227,18 @@ class FAQGenerator:
         if self.config.secondary_keywords:
             info["secondary_topics"] = list(self.config.secondary_keywords)
 
-        # Extract from H1 if no keyword specified
-        if not info["primary_topic"]:
-            for node in ast.nodes:
-                if node.node_type == NodeType.HEADING:
-                    level = node.metadata.get("level", node.metadata.get("heading_level", 2))
-                    if level == 1:
-                        # Strip [H*] markers from heading text
-                        info["primary_topic"] = self._strip_heading_markers(node.text_content)
+        # Extract H1 title and use as primary topic if no keyword specified
+        for node in ast.nodes:
+            if node.node_type == NodeType.HEADING:
+                level = node.metadata.get("level", node.metadata.get("heading_level", 2))
+                if level == 1:
+                    # Strip [H*] markers from heading text
+                    h1_text = self._strip_heading_markers(node.text_content)
+                    info["h1_title"] = h1_text  # Always track H1 for exclusion
+                    if not info["primary_topic"]:
+                        info["primary_topic"] = h1_text
                         info["primary_section"] = node.node_id
-                        break
+                    break
 
         # Extract key points from H2 headings AND build section content map
         # IMPORTANT: Skip metadata nodes (URL, Meta Title, etc.)
@@ -637,6 +640,9 @@ class FAQGenerator:
         Uses section content map for better matching, falls back to paragraph search.
         Filters out heading content and metadata to ensure only body text is used.
 
+        CRITICAL: Excludes H1 title content to prevent FAQ answers from containing
+        title fragments like "everything you need to know about X".
+
         Args:
             question: The question
             ast: Document AST
@@ -645,12 +651,47 @@ class FAQGenerator:
         Returns:
             Relevant content string (body paragraphs only, no headings)
         """
+        # Extract H1 title for filtering (must NOT appear in FAQ answers)
+        h1_title = ""
+        h1_words = set()
+        if topic_info:
+            h1_title = topic_info.get("h1_title", "").lower()
+            # Extract significant words from H1 for fuzzy matching
+            h1_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", h1_title))
+            h1_words -= {"what", "about", "know", "need", "your", "this", "that", "with", "from", "have", "will"}
+
         # Extract key terms from question
         question_words = set(
             re.findall(r"\b[a-zA-Z]{4,}\b", question.lower())
         )
         # Remove common question words
         question_words -= {"what", "does", "should", "know", "about", "which", "where", "when", "that", "this", "with", "from", "have", "will", "would", "could"}
+
+        def _contains_h1_content(text: str) -> bool:
+            """Check if text contains H1 title content (which must be excluded)."""
+            if not h1_title:
+                return False
+            text_lower = text.lower()
+            # Check for exact H1 title
+            if h1_title in text_lower:
+                return True
+            # Check for significant H1 word overlap (more than 60% match)
+            if h1_words:
+                text_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", text_lower))
+                overlap = len(h1_words & text_words)
+                if overlap > len(h1_words) * 0.6:
+                    return True
+            # Check for title-like patterns
+            title_patterns = [
+                r"everything you need to know",
+                r"complete guide to",
+                r"ultimate guide to",
+                r":\s*everything",
+            ]
+            for pattern in title_patterns:
+                if re.search(pattern, text_lower):
+                    return True
+            return False
 
         # First, try to find matching section from topic_info
         if topic_info and "section_content" in topic_info:
@@ -660,10 +701,12 @@ class FAQGenerator:
                 # Check if heading matches question keywords
                 heading_score = sum(1 for word in question_words if word in heading_lower)
                 if heading_score > 0 and paragraphs:
-                    # Filter out any heading-like content from paragraphs
+                    # Filter out any heading-like content and H1 content from paragraphs
                     valid_paragraphs = [
                         p for p in paragraphs
-                        if not self._is_heading_content(p) and len(p) > 50
+                        if not self._is_heading_content(p)
+                        and not _contains_h1_content(p)
+                        and len(p) > 50
                     ]
                     if valid_paragraphs:
                         return " ".join(valid_paragraphs[:2])
@@ -671,8 +714,8 @@ class FAQGenerator:
             # Also check content_summary as fallback
             content_summary = topic_info.get("content_summary", "")
             if content_summary and len(content_summary) > 50:
-                # Ensure content_summary doesn't contain heading-like text
-                if not self._is_heading_content(content_summary):
+                # Ensure content_summary doesn't contain heading-like or H1 content
+                if not self._is_heading_content(content_summary) and not _contains_h1_content(content_summary):
                     return content_summary
 
         relevant_paragraphs: list[tuple[int, str]] = []
@@ -700,6 +743,10 @@ class FAQGenerator:
             if self._is_heading_content(text, original_text):
                 continue
 
+            # CRITICAL: Skip content that contains H1 title fragments
+            if _contains_h1_content(text):
+                continue
+
             # Require proper sentence structure (ends with punctuation)
             if not text.rstrip().endswith((".", "!", "?")):
                 continue
@@ -719,7 +766,7 @@ class FAQGenerator:
             # Content already has markers stripped
             return " ".join([p[1] for p in relevant_paragraphs[:2]])
 
-        # Final fallback: use any substantial CONTENT paragraph (not metadata/heading)
+        # Final fallback: use any substantial CONTENT paragraph (not metadata/heading/H1)
         for node in ast.nodes:
             if node.node_type == NodeType.PARAGRAPH and len(node.text_content) > 50:
                 original_text = node.text_content
@@ -728,6 +775,7 @@ class FAQGenerator:
                 if (not should_skip_node(node)
                     and not self._is_metadata_paragraph(text)
                     and not self._is_heading_content(text, original_text)
+                    and not _contains_h1_content(text)
                     and text.rstrip().endswith((".", "!", "?"))):
                     return text
 

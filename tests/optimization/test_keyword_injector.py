@@ -48,7 +48,12 @@ def injector(config, guardrails):
 
 @pytest.fixture
 def sample_ast_no_keywords():
-    """Create AST without keywords."""
+    """Create AST without keywords.
+
+    Note: Content includes patterns that allow for natural keyword insertion,
+    such as "these organizations" which can be replaced with specific keywords.
+    The conservative keyword injector only inserts where grammatically correct.
+    """
     nodes = [
         make_node(
             "h1",
@@ -60,8 +65,8 @@ def sample_ast_no_keywords():
         make_node(
             "p1",
             NodeType.PARAGRAPH,
-            "This guide covers various aspects of digital marketing. "
-            "You will learn about strategies and techniques that help businesses grow.",
+            "These organizations need effective digital marketing strategies. "
+            "You will learn about techniques that help businesses grow.",
             40,
         ),
         make_node("h2_1", NodeType.HEADING, "Getting Started", 160, {"level": 2}),
@@ -69,7 +74,7 @@ def sample_ast_no_keywords():
             "p2",
             NodeType.PARAGRAPH,
             "Starting your journey requires understanding the basics. "
-            "Follow these steps to begin your path to success.",
+            "Such groups benefit from following these steps to success.",
             180,
         ),
     ]
