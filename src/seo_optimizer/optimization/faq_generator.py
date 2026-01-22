@@ -37,34 +37,11 @@ MIN_ANSWER_WORDS = 40
 MAX_ANSWER_WORDS = 60
 OPTIMAL_ANSWER_WORDS = 50
 
-# Question patterns for generation
-QUESTION_PATTERNS = {
-    "what": [
-        "What is {topic}?",
-        "What are the benefits of {topic}?",
-        "What does {topic} involve?",
-        "What should you know about {topic}?",
-    ],
-    "how": [
-        "How does {topic} work?",
-        "How can you use {topic}?",
-        "How do you get started with {topic}?",
-        "How is {topic} different from alternatives?",
-    ],
-    "why": [
-        "Why is {topic} important?",
-        "Why should you consider {topic}?",
-        "Why do businesses use {topic}?",
-    ],
-    "when": [
-        "When should you use {topic}?",
-        "When is {topic} most effective?",
-    ],
-    "who": [
-        "Who can benefit from {topic}?",
-        "Who should consider {topic}?",
-    ],
-}
+# ARCHITECTURAL NOTE: Question templates have been REMOVED
+# Questions must be derived ONLY from actual document content:
+# 1. Existing questions in the document (sentences ending with ?)
+# 2. H2 headings transformed into questions (minimal transformation)
+# 3. Never from hardcoded templates
 
 # FAQ section detection patterns
 FAQ_SECTION_PATTERNS = [
@@ -632,96 +609,241 @@ class FAQGenerator:
 
     def _generate_questions(self, topic_info: dict) -> list[str]:
         """
-        Generate relevant questions for the topic.
+        Extract questions from document content ONLY.
 
-        Uses the extracted topic (not raw keyword) for natural-sounding questions.
-        Example: "Running a booster club" → "What is a booster club?"
-                 NOT "What is Running a booster club?"
+        ARCHITECTURAL PRINCIPLE: Questions must be derived from the source document.
+        NO template-based question generation allowed.
+
+        Sources for questions:
+        1. Existing questions in the document (sentences ending with ?)
+        2. H2 headings converted to questions (minimal transformation)
+        3. Content patterns that naturally form questions
 
         Args:
             topic_info: Extracted topic information
 
         Returns:
-            List of question strings
+            List of question strings derived from document content
         """
         questions: list[str] = []
-        raw_keyword = topic_info.get("primary_topic", "")
+        seen_questions: set[str] = set()
 
-        if not raw_keyword:
-            return questions
+        def add_question(q: str) -> None:
+            """Add question if not duplicate."""
+            q = q.strip()
+            if q and q.endswith("?") and q.lower() not in seen_questions:
+                seen_questions.add(q.lower())
+                questions.append(q)
 
-        # Extract the core topic from the keyword for natural-sounding questions
-        topic = self._extract_topic_from_keyword(raw_keyword)
+        # SOURCE 1: Extract existing questions from document content
+        content_summary = topic_info.get("content_summary", "")
+        section_content = topic_info.get("section_content", {})
 
-        # Get topic variants for different question types
-        topic_with_article = self._get_topic_with_article(topic)  # "a booster club"
-        topic_plural = self._get_topic_with_article(topic, plural=True)  # "booster clubs"
+        # Find sentences that are already questions
+        all_content = content_summary
+        for paragraphs in section_content.values():
+            all_content += " " + " ".join(paragraphs)
 
-        # Generate questions with proper grammar
-        # Use article version for singular definitions, plural for general benefits
-        natural_questions = [
-            f"What is {topic_with_article}?",  # "What is a booster club?"
-            f"How does {topic_with_article} work?",  # "How does a booster club work?"
-            f"Why are {topic_plural} important?",  # "Why are booster clubs important?"
-            f"When should you consider {topic_with_article}?",  # "When should you consider a booster club?"
-            f"Who can benefit from {topic_plural}?",  # "Who can benefit from booster clubs?"
+        # Extract existing questions from content
+        sentences = re.split(r"(?<=[.!?])\s+", all_content)
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if sentence.endswith("?") and len(sentence) > 20:
+                # This is an existing question in the document
+                add_question(sentence)
+
+        # SOURCE 2: Convert H2 headings to questions (minimal transformation)
+        for heading in topic_info.get("key_points", []):
+            question = self._heading_to_question_minimal(heading)
+            if question:
+                add_question(question)
+
+        # SOURCE 3: Look for question-like patterns in content
+        # e.g., "You might wonder..." or "The question is..."
+        question_indicators = [
+            r"(?:you might (?:wonder|ask)|the question is|people ask|commonly asked)[:\s]+(.+?\?)",
+            r"(?:what|how|why|when|who|which)(?:\s+(?:is|are|does|do|can|should|would|will))(?:.+?\?)",
         ]
 
-        questions.extend(natural_questions)
-
-        # Add topic-specific questions from key points
-        for point in topic_info.get("key_points", [])[:3]:
-            # Generate question from heading
-            question = self._heading_to_question(point, topic)
-            if question and question not in questions:
-                questions.append(question)
-
-        # Add entity-based questions
-        for entity in topic_info.get("entities", [])[:2]:
-            question = f"How does {entity} relate to {topic_plural}?"
-            if question not in questions:
-                questions.append(question)
+        for pattern in question_indicators:
+            matches = re.findall(pattern, all_content, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, str) and match.strip():
+                    q = match.strip()
+                    if not q.endswith("?"):
+                        q += "?"
+                    add_question(q)
 
         return questions
 
-    def _heading_to_question(self, heading: str, topic: str) -> str | None:
+    def _heading_to_question_minimal(self, heading: str) -> str | None:
         """
-        Convert a heading to a question.
+        Convert a heading to a question using MINIMAL transformation.
+
+        ARCHITECTURAL PRINCIPLE: The question must be derived from the heading text.
+        NO template injection allowed. We only add "What/How/Why" prefix if needed.
+
+        Examples:
+            "Benefits of Booster Clubs" → "What are the benefits of Booster Clubs?"
+            "How It Works" → "How does it work?"
+            "Getting Started" → "How do you get started?"
+            "Random Heading" → None (no valid transformation)
 
         Args:
-            heading: The heading text
-            topic: The main topic
+            heading: The heading text from the document
 
         Returns:
-            Question string or None
+            Question string derived from heading, or None if no valid transformation
         """
+        if not heading:
+            return None
+
         heading = heading.strip()
 
-        # Skip if already a question
+        # If already a question, return as-is
         if heading.endswith("?"):
             return heading
 
-        # Remove common heading prefixes
-        heading = re.sub(r"^(how to|what is|why|when)\s+", "", heading, flags=re.I)
-
-        # Generate question based on heading structure
         heading_lower = heading.lower()
 
-        if "benefit" in heading_lower or "advantage" in heading_lower:
-            return f"What are the benefits of {topic}?"
-        elif "feature" in heading_lower:
-            return f"What features does {topic} offer?"
-        elif "cost" in heading_lower or "price" in heading_lower:
-            return f"How much does {topic} cost?"
-        elif "start" in heading_lower or "begin" in heading_lower:
-            return f"How do you get started with {topic}?"
-        elif "best" in heading_lower or "top" in heading_lower:
-            return f"What are the best practices for {topic}?"
-        elif "work" in heading_lower:
-            return f"How does {topic} work?"
-        else:
-            # Generic question from heading
-            return f"What should you know about {heading}?"
+        # TRANSFORMATION RULES (using heading text, not templates):
+
+        # Rule 1: "Benefits of X" → "What are the benefits of X?"
+        if heading_lower.startswith("benefits of "):
+            return f"What are the benefits of {heading[12:]}?"
+
+        # Rule 2: "Advantages of X" → "What are the advantages of X?"
+        if heading_lower.startswith("advantages of "):
+            return f"What are the advantages of {heading[14:]}?"
+
+        # Rule 3: "How X Works" → "How does X work?"
+        match = re.match(r"^how\s+(.+?)\s+works?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"How does {subject} work?"
+
+        # Rule 4: "How to X" → "How do you X?"
+        if heading_lower.startswith("how to "):
+            return f"How do you {heading[7:]}?"
+
+        # Rule 5: "Getting Started" or "Getting Started with X" → "How do you get started?"
+        if heading_lower.startswith("getting started"):
+            rest = heading[15:].strip()
+            if rest:
+                return f"How do you get started {rest}?"
+            return "How do you get started?"
+
+        # Rule 6: "What is X" (without question mark) → "What is X?"
+        if heading_lower.startswith("what is ") or heading_lower.startswith("what are "):
+            return heading + "?"
+
+        # Rule 7: "Why X" → "Why X?"
+        if heading_lower.startswith("why "):
+            return heading + "?"
+
+        # Rule 8: "When X" → "When X?"
+        if heading_lower.startswith("when "):
+            return heading + "?"
+
+        # Rule 9: "Who X" → "Who X?"
+        if heading_lower.startswith("who "):
+            return heading + "?"
+
+        # Rule 10: "Understanding X" → "What should you understand about X?"
+        if heading_lower.startswith("understanding "):
+            subject = heading[14:].strip()
+            if subject:
+                return f"What should you understand about {subject}?"
+
+        # Rule 11: "X Best Practices" → "What are the best practices for X?"
+        match = re.match(r"^(.+?)\s+best\s+practices?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What are the best practices for {subject}?"
+
+        # Rule 12: "X Tips" or "Tips for X" → "What tips are there for X?"
+        match = re.match(r"^(.+?)\s+tips?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What tips are there for {subject}?"
+        match = re.match(r"^tips?\s+(?:for|on)\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What tips are there for {subject}?"
+
+        # Rule 13: "X Guide" or "Guide to X" → "What does the guide cover about X?"
+        match = re.match(r"^(.+?)\s+guide$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What should you know about {subject}?"
+        match = re.match(r"^guide\s+to\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What should you know about {subject}?"
+
+        # Rule 14: "Types of X" or "X Types" → "What are the types of X?"
+        match = re.match(r"^types?\s+of\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What are the types of {subject}?"
+        match = re.match(r"^(.+?)\s+types?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What are the types of {subject}?"
+
+        # Rule 15: "X Overview" → "What is the overview of X?"
+        match = re.match(r"^(.+?)\s+overview$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What is {subject}?"
+
+        # Rule 16: "Introduction to X" → "What is X?"
+        match = re.match(r"^introduction\s+to\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What is {subject}?"
+
+        # Rule 17: "X Explained" → "What is X?"
+        match = re.match(r"^(.+?)\s+explained$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What is {subject}?"
+
+        # Rule 18: "The Importance of X" or "Importance of X" → "Why is X important?"
+        match = re.match(r"^(?:the\s+)?importance\s+of\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"Why is {subject} important?"
+
+        # Rule 19: "X Costs" or "Cost of X" → "How much does X cost?"
+        match = re.match(r"^(?:the\s+)?costs?\s+of\s+(.+)$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"How much does {subject} cost?"
+        match = re.match(r"^(.+?)\s+costs?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"How much does {subject} cost?"
+
+        # Rule 20: "X Requirements" → "What are the requirements for X?"
+        match = re.match(r"^(.+?)\s+requirements?$", heading, re.IGNORECASE)
+        if match:
+            subject = match.group(1)
+            return f"What are the requirements for {subject}?"
+
+        # NO FALLBACK - if we can't transform the heading cleanly, return None
+        # This prevents template-based question generation
+        return None
+
+    def _heading_to_question(self, heading: str, topic: str) -> str | None:
+        """
+        DEPRECATED: Use _heading_to_question_minimal instead.
+
+        This method is kept for backward compatibility but should not be used
+        as it contains template-based fallbacks.
+        """
+        # Delegate to minimal version - ignore topic parameter
+        return self._heading_to_question_minimal(heading)
 
     def _generate_answer(
         self, question: str, topic_info: dict, ast: DocumentAST
