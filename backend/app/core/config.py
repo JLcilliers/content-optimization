@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     CORS_ORIGINS: List[str] = [
         "http://localhost:3000",
         "http://localhost:3001",
-        "https://frontend-ke4wjrvr0-johan-cilliers-projects.vercel.app",
+        "https://ranking-content.com",
+        "https://www.ranking-content.com",
     ]
 
     # Allow all origins (set to True for debugging CORS issues)
@@ -33,6 +34,11 @@ class Settings(BaseSettings):
     DEFAULT_MIN_KEYWORD_DENSITY: float = 1.0
     DEFAULT_MAX_KEYWORD_DENSITY: float = 2.5
     DEFAULT_FAQ_COUNT: int = 5
+
+    # Firecrawl API settings
+    FIRECRAWL_API_KEY: str = ""
+    FIRECRAWL_API_URL: str = "https://api.firecrawl.dev/v1"
+    FIRECRAWL_TIMEOUT: int = 30
 
     class Config:
         env_file = ".env"
