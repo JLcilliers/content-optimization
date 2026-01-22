@@ -138,14 +138,30 @@ class FAQGenerator:
         # Generate questions based on content
         questions = self._generate_questions(topic_info)
 
-        # Generate answers for each question
-        for question in questions[: self.config.max_faq_items]:
+        # Generate answers for each question with STRICT validation
+        h1_title = topic_info.get("h1_title", "")
+
+        for question in questions[: self.config.max_faq_items * 2]:  # Generate more, filter later
+            if len(result.faqs) >= self.config.max_faq_items:
+                break  # Stop once we have enough valid FAQs
+
             answer = self._generate_answer(question, topic_info, ast)
 
             if answer:
                 # Apply AI vocabulary filter
                 filter_result = self.guardrails.filter_ai_vocabulary(answer)
                 answer = filter_result.cleaned_text
+
+                # CRITICAL: Validate FAQ answer quality BEFORE adding
+                is_valid, validation_reason = validate_faq_answer(
+                    answer,
+                    question,
+                    source_title=h1_title,
+                )
+
+                if not is_valid:
+                    # Skip this FAQ and try the next question
+                    continue
 
                 faq_entry = FAQEntry(
                     question=question,
@@ -439,14 +455,135 @@ class FAQGenerator:
 
         return topic
 
+    def _is_likely_plural(self, word: str) -> bool:
+        """
+        Check if a word/phrase appears to already be in plural form.
+
+        Handles common English plural patterns. Not perfect but catches most cases.
+
+        Args:
+            word: The word or phrase to check
+
+        Returns:
+            True if the word appears to be plural
+        """
+        if not word:
+            return False
+
+        word = word.strip().lower()
+
+        # Get the last word (for multi-word phrases like "booster clubs")
+        last_word = word.split()[-1] if word else ""
+        if not last_word:
+            return False
+
+        # Common singular words that end in 's' (not actually plural)
+        singular_s_words = {
+            "business", "class", "glass", "grass", "mass", "pass", "boss",
+            "loss", "cross", "dress", "stress", "process", "progress",
+            "success", "access", "address", "express", "compress", "congress",
+            "analysis", "basis", "crisis", "diagnosis", "emphasis", "hypothesis",
+            "thesis", "synopsis", "paralysis", "news", "lens", "means",
+            "series", "species", "politics", "economics", "physics", "mathematics",
+            "insurance", "compliance", "guidance", "assistance", "performance",
+        }
+        if last_word in singular_s_words:
+            return False
+
+        # Check for common plural endings
+        # Words ending in -ies (from -y → -ies)
+        if last_word.endswith("ies") and len(last_word) > 4:
+            return True
+
+        # Words ending in -es (from -s, -x, -z, -ch, -sh)
+        if last_word.endswith("es") and len(last_word) > 3:
+            # Check if the base form would end in s, x, z, ch, sh
+            base = last_word[:-2]
+            if base.endswith(("s", "x", "z", "ch", "sh")):
+                return True
+            # Also -oes plurals like "heroes", "potatoes"
+            if base.endswith("o"):
+                return True
+
+        # Words ending in -s (regular plurals) - but not -ss or -us or -is
+        if last_word.endswith("s") and not last_word.endswith(("ss", "us", "is", "ness", "less")):
+            # Check it's not a verb (simple heuristic: verbs often follow patterns)
+            # Most regular plural nouns: just end in -s after a non-s letter
+            if len(last_word) > 3 and last_word[-2] not in "s":
+                return True
+
+        return False
+
+    def _singularize(self, word: str) -> str:
+        """
+        Convert a plural word to singular form.
+
+        Simple singularization for common English patterns.
+
+        Args:
+            word: The word to singularize
+
+        Returns:
+            The singular form of the word
+        """
+        if not word:
+            return word
+
+        word = word.strip()
+        word_lower = word.lower()
+
+        # Get the last word for multi-word phrases
+        words = word.split()
+        if not words:
+            return word
+
+        last_word = words[-1]
+        last_lower = last_word.lower()
+
+        # Check common singular words that look plural
+        singular_s_words = {
+            "business", "class", "glass", "grass", "mass", "pass", "boss",
+            "loss", "cross", "dress", "stress", "process", "progress",
+            "success", "access", "address", "express", "compress", "congress",
+            "insurance", "compliance", "guidance", "assistance", "performance",
+        }
+        if last_lower in singular_s_words:
+            return word  # Already singular
+
+        # Handle -ies → -y
+        if last_lower.endswith("ies") and len(last_lower) > 4:
+            singular_last = last_word[:-3] + "y"
+            words[-1] = singular_last
+            return " ".join(words)
+
+        # Handle -es → remove es (for -s, -x, -z, -ch, -sh, -o bases)
+        if last_lower.endswith("es") and len(last_lower) > 3:
+            base = last_lower[:-2]
+            if base.endswith(("s", "x", "z", "ch", "sh", "o")):
+                singular_last = last_word[:-2]
+                words[-1] = singular_last
+                return " ".join(words)
+
+        # Handle regular -s plurals
+        if last_lower.endswith("s") and not last_lower.endswith(("ss", "us", "is")):
+            singular_last = last_word[:-1]
+            words[-1] = singular_last
+            return " ".join(words)
+
+        return word
+
     def _get_topic_with_article(self, topic: str, plural: bool = False) -> str:
         """
         Get the topic with an appropriate article ("a" or "an") for natural phrasing.
 
+        CRITICAL: Detects if topic is already plural to avoid double-pluralization.
+
         Examples:
             "booster club" → "a booster club"
+            "booster clubs" → "booster clubs" (already plural, no article needed)
             "organization" → "an organization"
             "booster club" (plural=True) → "booster clubs"
+            "booster clubs" (plural=True) → "booster clubs" (already plural)
 
         Args:
             topic: The topic noun phrase
@@ -459,8 +596,13 @@ class FAQGenerator:
             return topic
 
         topic = topic.strip()
+        is_already_plural = self._is_likely_plural(topic)
 
         if plural:
+            # If already plural, return as-is to avoid "clubses" errors
+            if is_already_plural:
+                return topic
+
             # Simple pluralization (handles common cases)
             if topic.endswith(("s", "x", "z", "ch", "sh")):
                 return topic + "es"
@@ -468,6 +610,10 @@ class FAQGenerator:
                 return topic[:-1] + "ies"
             else:
                 return topic + "s"
+
+        # For singular with article - need to singularize if already plural
+        if is_already_plural:
+            topic = self._singularize(topic)
 
         # Check if topic already has an article
         topic_lower = topic.lower()
@@ -782,153 +928,245 @@ class FAQGenerator:
         return ""
 
     def _generate_definition_answer(self, topic: str, context: str) -> str:
-        """Generate a definition-style answer using actual content."""
-        # Extract key information from context
-        key_info = self._extract_key_info(context, max_phrases=3)
+        """
+        Generate a definition-style answer using actual content.
 
-        if key_info and len(key_info) >= 2:
-            answer = f"{topic} is {key_info[0]}. {key_info[1].capitalize()}."
-            if len(key_info) > 2:
-                answer += f" {key_info[2].capitalize()}."
+        IMPORTANT: Uses complete sentences from context, not fragments.
+        The answer should be self-contained and grammatically correct.
+
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks - we prefer skipping the FAQ
+        over generating generic filler.
+
+        Args:
+            topic: The topic being defined (e.g., "booster club")
+            context: Relevant content from the document
+
+        Returns:
+            A complete, grammatical answer string, or empty string if insufficient content
+        """
+        topic_with_article = self._get_topic_with_article(topic)
+
+        # Extract COMPLETE sentences from context (not fragments)
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            # Use complete sentences directly - they're already grammatical
+            first_sentence = complete_sentences[0]
+
+            # Check if the first sentence already defines the topic
+            first_lower = first_sentence.lower()
+            if topic.lower() in first_lower and ("is" in first_lower or "are" in first_lower):
+                # Sentence already defines the topic - use directly
+                answer = first_sentence
+                if len(complete_sentences) > 1:
+                    answer += " " + complete_sentences[1]
+                if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                    answer += " " + complete_sentences[2]
+            else:
+                # Just use the content sentences without generic framing
+                answer = first_sentence
+                if len(complete_sentences) > 1:
+                    answer += " " + complete_sentences[1]
+                if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                    answer += " " + complete_sentences[2]
+
+            return answer
+
         elif context and len(context) > 50:
-            # Use first sentence from context directly
-            first_sentence = self._get_first_sentences(context, 2)
-            answer = f"{topic} refers to {first_sentence.lower() if not first_sentence[0].isupper() else first_sentence}"
-        else:
-            # Minimal fallback - at least name the topic clearly
-            answer = (
-                f"{topic} is a concept that involves specific practices and approaches. "
-                f"Understanding {topic} requires examining its core components and applications. "
-                f"This topic covers important aspects that affect how the process works."
-            )
+            # Try to use complete sentences from context
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
 
-        return answer
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_benefits_answer(self, topic: str, context: str) -> str:
-        """Generate a benefits-focused answer using actual content."""
-        benefits = self._extract_benefits(context)
+        """
+        Generate a benefits-focused answer using complete sentences from content.
 
-        if benefits and len(benefits) >= 2:
-            answer = f"The main benefits of {topic} include {benefits[0]} and {benefits[1]}."
-            if len(benefits) > 2:
-                answer += f" Additionally, {benefits[2]}."
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            # Use complete sentences to form a coherent answer
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
         elif context and len(context) > 50:
-            # Extract from context directly
-            key_points = self._get_first_sentences(context, 2)
-            answer = f"The key benefits of {topic} are described as follows: {key_points}"
-        else:
-            answer = (
-                f"The benefits of {topic} depend on how it is implemented and used. "
-                f"Proper application of {topic} principles can lead to better outcomes. "
-                f"Understanding these benefits helps in making informed decisions."
-            )
+            # Try to use complete sentences from context
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
 
-        return answer
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_explanation_answer(self, topic: str, context: str) -> str:
-        """Generate an explanation-style answer using actual content."""
-        processes = self._extract_processes(context)
+        """
+        Generate an explanation-style answer using complete sentences from content.
 
-        if processes:
-            answer = f"{topic} works by {processes[0]}."
-            if len(processes) > 1:
-                answer += f" The process involves {processes[1]}."
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
         elif context and len(context) > 50:
-            # Use context to explain
-            explanation = self._get_first_sentences(context, 2)
-            answer = f"{topic} involves a process where {explanation.lower() if explanation else 'specific steps are followed'}."
-        else:
-            answer = (
-                f"{topic} works through a series of defined steps and procedures. "
-                f"The approach requires understanding the underlying principles involved. "
-                f"Each component of {topic} contributes to the overall process."
-            )
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
 
-        return answer
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_howto_answer(self, topic: str, context: str) -> str:
-        """Generate a how-to style answer using actual content."""
-        steps = self._extract_steps(context)
+        """
+        Generate a how-to style answer using complete sentences from content.
 
-        if steps and len(steps) >= 2:
-            answer = f"To get started with {topic}, first {steps[0]}. Then, {steps[1]}."
-            if len(steps) > 2:
-                answer += f" Finally, {steps[2]}."
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
         elif context and len(context) > 50:
-            # Use context for guidance
-            guidance = self._get_first_sentences(context, 2)
-            answer = f"Getting started with {topic} involves: {guidance}"
-        else:
-            answer = (
-                f"Getting started with {topic} requires following specific steps. "
-                f"Begin by understanding the basic requirements and prerequisites. "
-                f"Then proceed with the implementation according to established guidelines."
-            )
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
 
-        return answer
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_reasoning_answer(self, topic: str, context: str) -> str:
-        """Generate a reasoning-style answer using actual content."""
-        reasons = self._extract_reasons(context)
+        """
+        Generate a reasoning-style answer using complete sentences from content.
 
-        if reasons and len(reasons) >= 2:
-            answer = f"{topic} is important because {reasons[0]}. Furthermore, {reasons[1]}."
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
         elif context and len(context) > 50:
-            # Extract reasoning from context
-            reasoning = self._get_first_sentences(context, 2)
-            answer = f"{topic} matters because {reasoning.lower() if reasoning else 'it addresses key needs'}."
-        else:
-            answer = (
-                f"{topic} is important for several reasons related to its core purpose. "
-                f"Understanding why {topic} matters helps in proper implementation. "
-                f"The significance becomes clear when examining its practical applications."
-            )
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
 
-        return answer
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_timing_answer(self, topic: str, context: str) -> str:
-        """Generate a timing-focused answer using actual content."""
-        if context and len(context) > 50:
-            timing_info = self._get_first_sentences(context, 2)
-            return (
-                f"The appropriate time to consider {topic} depends on specific circumstances. "
-                f"{timing_info} Understanding when to apply {topic} principles ensures better results."
-            )
-        return (
-            f"The timing for {topic} depends on the specific situation and requirements. "
-            f"Generally, {topic} should be considered when the relevant conditions are met. "
-            f"Planning ahead and understanding the prerequisites helps determine the right timing."
-        )
+        """
+        Generate a timing-focused answer using complete sentences from content.
+
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
+        elif context and len(context) > 50:
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
+
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_audience_answer(self, topic: str, context: str) -> str:
-        """Generate an audience-focused answer using actual content."""
-        if context and len(context) > 50:
-            audience_info = self._get_first_sentences(context, 2)
-            return (
-                f"People interested in {topic} typically include individuals seeking specific outcomes. "
-                f"{audience_info} Anyone affected by the topic can benefit from understanding it better."
-            )
-        return (
-            f"People who can benefit from understanding {topic} include individuals directly involved in related activities. "
-            f"Information about {topic} is valuable for anyone making decisions in this area. "
-            f"Both newcomers and experienced individuals can gain insights from learning about {topic}."
-        )
+        """
+        Generate an audience-focused answer using complete sentences from content.
+
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
+        elif context and len(context) > 50:
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
+
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _generate_generic_answer(
         self, topic: str, question: str, context: str
     ) -> str:
-        """Generate an answer based on actual content when pattern doesn't match."""
-        if context and len(context) > 50:
-            content_summary = self._get_first_sentences(context, 3)
-            return (
-                f"Regarding {topic}: {content_summary} "
-                f"This information helps address key aspects of the topic."
-            )
-        return (
-            f"Understanding {topic} involves examining its various components and implications. "
-            f"The topic encompasses several important aspects worth considering. "
-            f"Further exploration of {topic} reveals its relevance to the broader context."
-        )
+        """
+        Generate an answer based on actual content when pattern doesn't match.
+
+        CRITICAL: Returns empty string if no real content is available.
+        NO hardcoded template fallbacks.
+        """
+        # Extract complete sentences from context
+        complete_sentences = self._extract_key_info(context, max_phrases=3)
+
+        if complete_sentences and len(complete_sentences) >= 1:
+            answer = complete_sentences[0]
+            if len(complete_sentences) > 1:
+                answer += " " + complete_sentences[1]
+            if len(complete_sentences) > 2 and len(answer.split()) < 45:
+                answer += " " + complete_sentences[2]
+            return answer
+
+        elif context and len(context) > 50:
+            first_sentences = self._get_first_sentences(context, 3)
+            if first_sentences and len(first_sentences.split()) >= 30:
+                return first_sentences
+
+        # NO FALLBACK - return empty string if insufficient real content
+        return ""
 
     def _get_first_sentences(self, text: str, count: int = 2) -> str:
         """
@@ -978,24 +1216,64 @@ class FAQGenerator:
         return result.strip()
 
     def _extract_key_info(self, text: str, max_phrases: int = 3) -> list[str]:
-        """Extract key phrases from text."""
+        """
+        Extract complete, meaningful sentences from text for FAQ answers.
+
+        IMPORTANT: Returns COMPLETE sentences, not fragments. This prevents
+        gibberish FAQ answers like "booster club is booster clubs: everything".
+
+        Args:
+            text: Source text to extract from
+            max_phrases: Maximum number of sentences to return
+
+        Returns:
+            List of complete, self-contained sentences
+        """
         if not text:
             return []
 
-        # Simple extraction - in production, use NLP
-        sentences = re.split(r"[.!?]+", text)
-        phrases: list[str] = []
+        # Split into sentences properly
+        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+        complete_sentences: list[str] = []
 
-        for sentence in sentences[:5]:
+        for sentence in sentences:
             sentence = sentence.strip()
-            if len(sentence) > 20:
-                # Extract a meaningful phrase
-                words = sentence.split()[:8]
-                phrase = " ".join(words).lower()
-                if phrase and len(phrase) > 10:
-                    phrases.append(phrase)
 
-        return phrases[:max_phrases]
+            # Must be a complete sentence with proper ending
+            if not sentence.endswith((".", "!", "?")):
+                continue
+
+            # Must be substantial (at least 30 chars to be meaningful)
+            if len(sentence) < 30:
+                continue
+
+            # Skip heading-like content (short without proper sentence structure)
+            if self._is_heading_content(sentence):
+                continue
+
+            # Skip sentences that look like title fragments
+            sentence_lower = sentence.lower()
+            title_patterns = [
+                "everything you need to know",
+                "complete guide",
+                "ultimate guide",
+                ": everything",
+                "all you need",
+            ]
+            if any(pattern in sentence_lower for pattern in title_patterns):
+                continue
+
+            # Skip very short sentences that are likely fragments
+            word_count = len(sentence.split())
+            if word_count < 6:
+                continue
+
+            complete_sentences.append(sentence)
+
+            if len(complete_sentences) >= max_phrases:
+                break
+
+        return complete_sentences
 
     def _extract_benefits(self, text: str) -> list[str]:
         """Extract benefit phrases from text."""
@@ -1059,37 +1337,31 @@ class FAQGenerator:
 
         return [r.strip().lower() for r in reasons if len(r) > 10][:2]
 
-    def _adjust_answer_length(self, answer: str) -> str:
+    def _adjust_answer_length(self, answer: str) -> str | None:
         """
         Adjust answer to meet word count requirements.
 
         Target: 40-60 words (BLUF methodology)
 
+        CRITICAL: Does NOT add filler content. If answer is too short and cannot
+        be improved with real content, returns None so the FAQ is skipped.
+
         Args:
             answer: The answer to adjust
 
         Returns:
-            Adjusted answer
+            Adjusted answer, or None if answer is too short
         """
+        if not answer:
+            return None
+
         words = answer.split()
         word_count = len(words)
 
         if word_count < MIN_ANSWER_WORDS:
-            # Too short - need to expand with meaningful additions
-            answer = answer.rstrip(".")
-
-            # Add expansion sentences until we meet minimum
-            expansion_sentences = [
-                "This approach helps ensure consistent results across different use cases.",
-                "Understanding these aspects provides a solid foundation for making informed decisions.",
-                "Proper implementation leads to better outcomes and more effective results.",
-            ]
-
-            expansion_idx = 0
-            while word_count < MIN_ANSWER_WORDS and expansion_idx < len(expansion_sentences):
-                answer += ". " + expansion_sentences[expansion_idx]
-                word_count = len(answer.split())
-                expansion_idx += 1
+            # Too short - REJECT instead of adding filler
+            # The validation will catch this anyway, but we fail fast here
+            return None
 
         elif word_count > MAX_ANSWER_WORDS:
             # Too long - truncate at sentence boundary
@@ -1107,6 +1379,9 @@ class FAQGenerator:
 
             if result:
                 answer = " ".join(result)
+            else:
+                # Can't fit even one sentence - reject
+                return None
 
         # Ensure proper ending
         answer = answer.strip()
@@ -1222,3 +1497,317 @@ class FAQGenerator:
                 })
 
         return issues
+
+
+# =============================================================================
+# FAQ Quality Gate - CRITICAL for FAQ answer validation
+# =============================================================================
+
+
+# Banned phrases that indicate non-self-contained or filler answers
+BANNED_FAQ_PHRASES = [
+    # Reference-dependent phrases (requires context)
+    "this article",
+    "as mentioned",
+    "see above",
+    "click here",
+    "the following",
+    "as discussed",
+    "in this guide",
+    "in this post",
+    "as we mentioned",
+    "as stated above",
+    "as explained above",
+    "read more",
+    "learn more",
+    "find out more",
+    "check out",
+    # Generic filler phrases (low information density)
+    "it is important to note",
+    "understanding these aspects",
+    "this approach helps ensure",
+    "anyone affected by the topic",
+    "for making informed decisions",
+    "this is important",
+    "is important because",
+    "comprehensive process",
+    "various aspects",
+    "several key",
+    "numerous benefits",
+    "many advantages",
+    "wide range of",
+    "plays a crucial role",
+    "plays an important role",
+    "is essential for",
+    "is crucial for",
+    "is vital for",
+    "stakeholders and participants",
+    "proper engagement",
+    # Title-like patterns (H1 contamination)
+    "everything you need to know",
+    "complete guide to",
+    "ultimate guide to",
+    "all you need to know",
+    "comprehensive overview",
+    # Circular/meaningless definitions
+    "refers to a specific type",
+    "is a type of organization that serves specific purposes",
+    "involves examining their various components",
+    "encompasses several important aspects",
+]
+
+# Additional phrases that indicate incoherent content
+INCOHERENT_PATTERNS = [
+    r":\s*everything\b",  # Colon followed by "everything"
+    r"\b\w+\s+is\s+\w+s\s*:\s*\w+",  # "X is Xs: Y" pattern (gibberish)
+    r"\b(\w+)\s+\1\s+\1\b",  # Triple word repetition
+    r"^[a-z]",  # Starts with lowercase (sentence fragment)
+]
+
+
+def validate_faq_answer(
+    answer: str,
+    question: str,
+    source_title: str | None = None,
+    min_words: int = MIN_ANSWER_WORDS,
+    max_words: int = MAX_ANSWER_WORDS,
+) -> tuple[bool, str]:
+    """
+    Quality gate for FAQ answers - CRITICAL validation function.
+
+    This is the primary validation gate that ensures FAQ answers meet
+    quality standards before being included in the output.
+
+    Validation checks:
+    1. Length: 40-60 words (configurable via min/max)
+    2. Fragment detection: Must have subject and verb
+    3. Self-containment: No dangling references
+    4. Title contamination: Answer shouldn't start with title
+    5. Question echo: Answer shouldn't repeat the question
+    6. Incoherent patterns: No gibberish constructions
+    7. Sentence completeness: All sentences must be complete
+
+    Args:
+        answer: The FAQ answer to validate
+        question: The FAQ question (for echo detection)
+        source_title: Optional document title (for contamination check)
+        min_words: Minimum word count (default 40)
+        max_words: Maximum word count (default 60)
+
+    Returns:
+        Tuple of (is_valid, reason_if_invalid)
+    """
+    if not answer or not answer.strip():
+        return False, "Empty answer"
+
+    answer = answer.strip()
+    answer_lower = answer.lower()
+
+    # 1. Length check
+    word_count = len(answer.split())
+    if word_count < min_words:
+        return False, f"Answer too short ({word_count} words, minimum is {min_words})"
+    if word_count > max_words:
+        return False, f"Answer too long ({word_count} words, maximum is {max_words})"
+
+    # 2. Fragment check - must have subject and verb
+    has_valid_structure = _check_sentence_structure(answer)
+    if not has_valid_structure:
+        return False, "Answer appears to be a fragment (no subject-verb structure)"
+
+    # 3. Self-containment check - no banned phrases
+    for phrase in BANNED_FAQ_PHRASES:
+        if phrase in answer_lower:
+            return False, f"Answer contains non-self-contained phrase: '{phrase}'"
+
+    # Check for pronoun-only subjects at start
+    first_words = answer_lower.split()[:3]
+    if first_words:
+        # Don't allow starting with bare pronouns that require context
+        if first_words[0] in ["it", "this", "that", "they", "he", "she", "we"]:
+            # Unless followed by "is" + noun (e.g., "This is a tool that...")
+            if len(first_words) >= 2 and first_words[1] != "is":
+                return False, "Answer starts with context-dependent pronoun"
+
+    # 4. Title contamination check
+    if source_title:
+        title_lower = source_title.lower()
+        # Check if answer starts with title content
+        answer_first_50 = answer_lower[:min(50, len(answer_lower))]
+        if title_lower in answer_first_50:
+            return False, "Answer starts with document title (title contamination)"
+
+        # Check for significant title word overlap at the start
+        title_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", title_lower))
+        title_words -= {"what", "about", "know", "need", "your", "this", "that", "with"}
+
+        if title_words:
+            answer_start_words = set(re.findall(r"\b[a-zA-Z]{4,}\b", answer_first_50))
+            overlap = len(title_words & answer_start_words)
+            if overlap > len(title_words) * 0.6:
+                return False, "Answer contains too much title content at start"
+
+    # 5. Question echo check - answer shouldn't repeat the question
+    if question:
+        question_lower = question.lower().rstrip("?")
+        question_words = question_lower.split()[:5]
+        answer_first_words = answer_lower.split()[:5]
+
+        # Count word overlap
+        overlap = sum(1 for w in answer_first_words if w in question_words)
+        if overlap > 3:
+            return False, "Answer echoes the question too closely"
+
+    # 6. Must end with proper punctuation
+    if not answer.rstrip().endswith((".", "!", "?")):
+        return False, "Answer doesn't end with proper punctuation"
+
+    # 7. Must have at least 2 complete sentences for substance
+    sentences = re.split(r"(?<=[.!?])\s+", answer.strip())
+    complete_sentences = [s for s in sentences if s.strip() and len(s.split()) >= 5]
+    if len(complete_sentences) < 2:
+        return False, "Answer should have at least 2 complete sentences"
+
+    # 8. Check for incoherent patterns (gibberish)
+    for pattern in INCOHERENT_PATTERNS:
+        if re.search(pattern, answer):
+            return False, f"Answer contains incoherent pattern"
+
+    # 9. Check each sentence is grammatically complete (ends properly, starts capitalized)
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+
+        # Sentence should start with uppercase (unless after abbreviation)
+        if sentence and sentence[0].islower():
+            # Check if previous sentence ended with an abbreviation
+            if not re.search(r"\b(?:e\.g|i\.e|etc|vs|dr|mr|ms|mrs)\s*$", answer_lower[:answer_lower.find(sentence.lower())], re.IGNORECASE):
+                return False, "Sentence starts with lowercase (possible fragment)"
+
+        # Check for incomplete thoughts (ending mid-sentence markers)
+        if sentence.rstrip().endswith((",", ";", ":")):
+            return False, "Sentence ends with incomplete marker"
+
+        # Check for sentence fragments that look like titles/headings
+        if len(sentence.split()) < 6 and not sentence.endswith((".", "!", "?")):
+            return False, "Short sentence fragment detected"
+
+    # 10. Check for word repetition patterns indicating incoherence
+    words = answer_lower.split()
+    for i in range(len(words) - 1):
+        if words[i] == words[i + 1] and words[i] not in ("very", "had", "that"):
+            return False, f"Repeated word detected: '{words[i]}'"
+
+    return True, ""
+
+
+def _check_sentence_structure(text: str) -> bool:
+    """
+    Check if text has valid sentence structure (subject + verb).
+
+    Uses spaCy if available, otherwise uses heuristic.
+
+    Args:
+        text: Text to check
+
+    Returns:
+        True if text has valid sentence structure
+    """
+    # Try spaCy for accurate analysis
+    try:
+        import spacy
+        try:
+            nlp = spacy.load("en_core_web_sm")
+            doc = nlp(text)
+
+            has_subject = False
+            has_verb = False
+
+            for token in doc:
+                if token.dep_ in ("nsubj", "nsubjpass", "csubj", "csubjpass", "expl"):
+                    has_subject = True
+                if token.pos_ == "VERB":
+                    has_verb = True
+
+            return has_subject and has_verb
+
+        except OSError:
+            pass  # spaCy model not found, use heuristic
+    except ImportError:
+        pass  # spaCy not installed, use heuristic
+
+    # Heuristic fallback: check for common verb patterns
+    # This is less accurate but works without spaCy
+    text_lower = text.lower()
+
+    # Common verb patterns
+    verb_patterns = [
+        r"\b(is|are|was|were|will|would|can|could|should|have|has|had)\b",
+        r"\b(provides?|offers?|includes?|involves?|requires?|means?)\b",
+        r"\b(helps?|makes?|creates?|allows?|enables?|supports?)\b",
+        r"\b(refers?|describes?|explains?|defines?|represents?)\b",
+        r"\b(delivers?|eliminates?|gains?|access|transforms?)\b",
+    ]
+
+    has_verb = any(re.search(pattern, text_lower) for pattern in verb_patterns)
+
+    # Check for subject by looking for nouns/pronouns at sentence start
+    words = text.split()
+    first_word_original = words[0] if words else ""
+    first_word_lower = first_word_original.lower()
+
+    subject_indicators = [
+        "a", "an", "the", "this", "that", "these", "those",
+        "it", "they", "we", "he", "she", "i", "you",
+    ]
+
+    # Subject exists if first word is:
+    # - a common subject indicator (articles, pronouns)
+    # - a capitalized word (likely a proper noun or start of sentence)
+    has_subject = (
+        first_word_lower in subject_indicators or
+        (first_word_original and first_word_original[0].isupper())
+    )
+
+    return has_verb and has_subject
+
+
+def filter_valid_faqs(
+    faqs: list[FAQEntry],
+    source_title: str | None = None,
+    min_valid: int = 3,
+) -> list[FAQEntry]:
+    """
+    Filter FAQs to only include those passing quality gate.
+
+    Args:
+        faqs: List of FAQ entries to filter
+        source_title: Optional document title for contamination check
+        min_valid: Minimum number of valid FAQs to return
+
+    Returns:
+        List of valid FAQ entries
+    """
+    valid_faqs: list[FAQEntry] = []
+
+    for faq in faqs:
+        is_valid, reason = validate_faq_answer(
+            faq.answer,
+            faq.question,
+            source_title=source_title,
+        )
+
+        if is_valid:
+            valid_faqs.append(faq)
+
+    # If we don't have enough valid FAQs, log warning
+    if len(valid_faqs) < min_valid:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            f"Only {len(valid_faqs)} FAQs passed quality gate "
+            f"(minimum {min_valid} requested)"
+        )
+
+    return valid_faqs
