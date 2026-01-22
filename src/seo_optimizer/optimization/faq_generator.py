@@ -1741,13 +1741,18 @@ def _check_sentence_structure(text: str) -> bool:
     # This is less accurate but works without spaCy
     text_lower = text.lower()
 
-    # Common verb patterns
+    # Common verb patterns (expanded to catch more verbs)
     verb_patterns = [
         r"\b(is|are|was|were|will|would|can|could|should|have|has|had)\b",
         r"\b(provides?|offers?|includes?|involves?|requires?|means?)\b",
         r"\b(helps?|makes?|creates?|allows?|enables?|supports?)\b",
         r"\b(refers?|describes?|explains?|defines?|represents?)\b",
         r"\b(delivers?|eliminates?|gains?|access|transforms?)\b",
+        r"\b(protects?|covers?|shields?|safeguards?|insures?)\b",
+        r"\b(operates?|functions?|works?|runs?|manages?)\b",
+        r"\b(raises?|funds?|purchases?|buys?|sells?)\b",
+        r"\b(starts?|begins?|establishes?|forms?|organizes?)\b",
+        r"\b(need|needs|needed|want|wants|wanted|get|gets|got)\b",
     ]
 
     has_verb = any(re.search(pattern, text_lower) for pattern in verb_patterns)
